@@ -141,6 +141,15 @@ class TradingApp(App):
     .config-input {
         width: 40;
     }
+    .config-select {
+        width: 40;
+    }
+    .strategy-info {
+        height: 3;
+        padding: 0 1 0 31;
+        color: $text-muted;
+        text-style: italic;
+    }
     #config-buttons {
         margin-top: 1;
         height: 3;
@@ -216,7 +225,11 @@ class TradingApp(App):
         Binding("6", "show_config", "Config", show=True, id="nav_config"),
         Binding("7", "show_backtest", "Backtest", show=True, id="nav_backtest"),
         Binding("ctrl+q", "quit", "Quit", show=True, id="nav_quit"),
+        Binding("ctrl+c", "quit", "Quit", show=False),
     ]
+
+    # Track running state for clean shutdown
+    _running = True
  
     TITLE = "TRADING CLI"
     SUB_TITLE = "Paper Trading Mode"
@@ -225,7 +238,8 @@ class TradingApp(App):
         super().__init__()
         self.config: dict = {}
         self.db_conn = None
-        self.client = None
+        self.adapter = None
+        self.strategy = None
         self.finbert = None
         self.demo_mode: bool = True
         self.market_open: bool = False
@@ -243,6 +257,165 @@ class TradingApp(App):
         yield OrderedFooter()
  
     # We install all named screens so push_screen(name) works
+    CSS = """
+    Screen {
+        background: $surface;
+    }
+    #splash-inner {
+        align: center middle;
+        width: 60;
+        height: auto;
+        padding: 2 4;
+        border: double $primary;
+    }
+    #splash-title {
+        text-align: center;
+        margin-bottom: 1;
+    }
+    #splash-status {
+        text-align: center;
+        color: $text-muted;
+        margin-top: 1;
+    }
+    #account-bar {
+        height: 1;
+        padding: 0 1;
+        background: $panel;
+    }
+    #main-split {
+        height: 1fr;
+    }
+    #left-pane {
+        width: 50%;
+        border-right: solid $primary-darken-2;
+        padding: 0 1;
+    }
+    #right-pane {
+        width: 50%;
+        padding: 0 1;
+    }
+    #signals-label, #positions-label {
+        height: 1;
+        color: $primary;
+        text-style: bold;
+    }
+    #signal-log {
+        height: 1fr;
+    }
+    #config-scroll {
+        width: 100%;
+        height: 1fr;
+    }
+    #config-buttons {
+        margin-top: 1;
+        height: 3;
+        align: center middle;
+    }
+    #config-buttons Button {
+        margin: 0 1;
+    }
+    #order-grid {
+        align: center middle;
+        width: 60;
+        height: auto;
+        border: thick $error;
+        padding: 2;
+        background: $surface;
+    }
+    #order-msg {
+        margin-bottom: 1;
+    }
+    #order-buttons {
+        height: 3;
+    }
+    #confirm-grid {
+        align: center middle;
+        width: 55;
+        height: auto;
+        border: thick $warning;
+        padding: 2;
+        background: $surface;
+    }
+    #confirm-buttons {
+        margin-top: 1;
+        height: 3;
+    }
+    #wl-input-row {
+        height: 3;
+    }
+    #wl-help, #sent-help, #trades-help {
+        height: 1;
+        color: $text-muted;
+        margin-bottom: 1;
+    }
+    #sent-input-row {
+        height: 3;
+        margin-bottom: 1;
+    }
+    #sent-progress {
+        height: 1;
+        margin: 0 1;
+    }
+    #sent-neg-label, #sent-pos-label {
+        height: 1;
+        margin: 0 1;
+    }
+    #sent-summary {
+        height: auto;
+        max-height: 3;
+        padding: 0 1;
+    }
+    #wl-table, #trades-table, #sent-table, #portfolio-table {
+        height: 1fr;
+    }
+    #portfolio-summary {
+        height: 1;
+        padding: 0 1;
+        background: $panel;
+    }
+    #portfolio-actions {
+        height: 3;
+        margin-bottom: 1;
+    }
+    #portfolio-actions Button {
+        margin-right: 1;
+    }
+    #backtest-input-row {
+        height: 3;
+        margin-bottom: 1;
+    }
+    #backtest-input-row Input {
+        width: 1fr;
+    }
+    #backtest-input-row Button {
+        margin-left: 1;
+    }
+    #backtest-summary {
+        height: auto;
+        max-height: 3;
+        padding: 0 1;
+    }
+    #trades-filter-row {
+        height: 3;
+    }
+    #auto-trade-row {
+        height: 3;
+        margin-top: 1;
+        align: left middle;
+    }
+    #strategy-info {
+        height: auto;
+        max-height: 3;
+        padding: 0 1 0 2;
+        color: $text-muted;
+        text-style: italic;
+    }
+    Collapsible {
+        width: 100%;
+        height: auto;
+    }
+    """
+
     def on_mount(self) -> None:
         from trading_cli.screens.dashboard import DashboardScreen
         from trading_cli.screens.watchlist import WatchlistScreen
@@ -261,12 +434,12 @@ class TradingApp(App):
         self.install_screen(BacktestScreen(), name="backtest")
 
         self._boot()
- 
+
     @work(thread=True, name="boot")
     def _boot(self) -> None:
         """Boot sequence: load config → FinBERT → Alpaca → DB → start workers."""
         splash = self._get_splash()
- 
+
         def status(msg: str) -> None:
             if splash:
                 self.call_from_thread(splash.set_status, msg)
@@ -293,17 +466,27 @@ class TradingApp(App):
         status("Loading FinBERT model (this may take ~30s on first run)…")
         from trading_cli.sentiment.finbert import FinBERTAnalyzer
         self.finbert = FinBERTAnalyzer.get_instance()
-        self.finbert.load(progress_callback=status)
+        success = self.finbert.load(progress_callback=status)
+        if not success:
+            error_msg = self.finbert.load_error or "Unknown error"
+            status(f"FinBERT failed to load: {error_msg}")
  
-        # 4. Alpaca
-        status("Connecting to Alpaca…")
-        from trading_cli.execution.alpaca_client import create_client
-        self.client = create_client(self.config)
-        self.demo_mode = getattr(self.client, "demo_mode", True)
- 
+        # 4. Trading adapter
+        status("Connecting to trading platform…")
+        from trading_cli.execution.adapter_factory import create_trading_adapter
+        self.adapter = create_trading_adapter(self.config)
+        self.demo_mode = self.adapter.is_demo_mode
+
+        # 5. Strategy adapter
+        status(f"Loading strategy: {self.config.get('strategy_id', 'hybrid')}…")
+        from trading_cli.strategy.strategy_factory import create_trading_strategy
+        self.strategy = create_trading_strategy(self.config)
+        strategy_name = self.strategy.info().name
+        status(f"Strategy: {strategy_name}")
+
         try:
-            clock = self.client.get_market_clock()
-            self.market_open = clock.get("is_open", False)
+            clock = self.adapter.get_market_clock()
+            self.market_open = clock.is_open
         except Exception:
             self.market_open = False
  
@@ -332,23 +515,42 @@ class TradingApp(App):
             splash.dismiss()
         if self.demo_mode:
             self.notify("Running in DEMO MODE — add Alpaca keys in Config (6)", timeout=5)
+        if self.finbert and not self.finbert.is_loaded:
+            error_detail = self.finbert.load_error or "Unknown error"
+            self.notify(
+                f"FinBERT failed to load: {error_detail}\n"
+                "Sentiment will show neutral. Press [r] on Sentiment screen to retry.",
+                severity="warning",
+                timeout=10,
+            )
  
     def _start_workers(self) -> None:
+        self._running = True
         self._poll_prices()
         self._poll_positions()
         self._poll_signals()
- 
+
+    def _stop_workers(self) -> None:
+        """Signal all workers to stop."""
+        self._running = False
+
+    def on_unmount(self) -> None:
+        """Clean up on app shutdown."""
+        self._stop_workers()
+        logger.info("TradingApp shutting down...")
+        # Ensure we exit with code 0 for clean shutdown
+        self.exit(0)
+
     # ── Background workers ─────────────────────────────────────────────────────
- 
+
     @work(thread=True, name="poll-prices", exclusive=False)
     def _poll_prices(self) -> None:
         """Continuously fetch latest prices for watchlist symbols."""
-        while True:
+        while self._running:
             try:
                 interval = self.config.get("poll_interval_prices", 30)
-                if self.watchlist and self.client:
-                    from trading_cli.data.market import get_latest_quotes_batch
-                    prices = get_latest_quotes_batch(self.client, self.watchlist)
+                if self.watchlist and self.adapter:
+                    prices = self.adapter.get_latest_quotes_batch(self.watchlist)
                     if prices:
                         self._prices = prices
                         self.call_from_thread(self._on_prices_updated)
@@ -359,11 +561,11 @@ class TradingApp(App):
     @work(thread=True, name="poll-positions", exclusive=False)
     def _poll_positions(self) -> None:
         """Sync positions from Alpaca and update dashboard."""
-        while True:
+        while self._running:
             try:
-                if self.client:
-                    acct = self.client.get_account()
-                    positions = self.client.get_positions()
+                if self.adapter:
+                    acct = self.adapter.get_account()
+                    positions = self.adapter.get_positions()
                     self._portfolio_history.append(acct.portfolio_value)
                     if len(self._portfolio_history) > 1000:
                         self._portfolio_history = self._portfolio_history[-1000:]
@@ -371,12 +573,12 @@ class TradingApp(App):
             except Exception as exc:
                 logger.warning("Position poll error: %s", exc)
             time.sleep(self.config.get("poll_interval_positions", 60))
- 
+
     @work(thread=True, name="poll-signals", exclusive=False)
     def _poll_signals(self) -> None:
         """Generate trading signals and optionally execute auto-trades."""
         time.sleep(10)  # short delay so prices are available first
-        while True:
+        while self._running:
             try:
                 self._run_signal_cycle()
             except Exception as exc:
@@ -386,9 +588,8 @@ class TradingApp(App):
     def _run_signal_cycle(self) -> None:
         from trading_cli.data.market import fetch_ohlcv_yfinance
         from trading_cli.data.news import fetch_headlines
-        from trading_cli.sentiment.aggregator import aggregate_scores_weighted
+        from trading_cli.sentiment.aggregator import aggregate_scores_weighted, aggregate_scores
         from trading_cli.sentiment.news_classifier import classify_headlines, EventType, DEFAULT_WEIGHTS as EVENT_WEIGHTS
-        from trading_cli.strategy.signals import generate_signal
         from trading_cli.strategy.risk import check_max_drawdown
         from trading_cli.data.db import save_signal
 
@@ -399,15 +600,6 @@ class TradingApp(App):
             EventType.PRODUCT: self.config.get("event_weight_product", EVENT_WEIGHTS[EventType.PRODUCT]),
             EventType.MACRO: self.config.get("event_weight_macro", EVENT_WEIGHTS[EventType.MACRO]),
             EventType.GENERIC: self.config.get("event_weight_generic", EVENT_WEIGHTS[EventType.GENERIC]),
-        }
-
-        # Build tech indicator weight map from config
-        tech_weights = {
-            "sma": self.config.get("weight_sma", 0.25),
-            "rsi": self.config.get("weight_rsi", 0.25),
-            "bb": self.config.get("weight_bb", 0.20),
-            "ema": self.config.get("weight_ema", 0.15),
-            "volume": self.config.get("weight_volume", 0.15),
         }
 
         half_life = self.config.get("sentiment_half_life_hours", 24.0)
@@ -435,7 +627,6 @@ class TradingApp(App):
 
                 # Use weighted aggregation if we have classifications
                 if classifications and sent_results:
-                    # Try to extract timestamps from FinBERT cache results
                     timestamps = [r.get("timestamp", 0) for r in sent_results] if sent_results else None
                     sent_score = aggregate_scores_weighted(
                         sent_results,
@@ -445,31 +636,31 @@ class TradingApp(App):
                         half_life_hours=half_life,
                     )
                 else:
-                    from trading_cli.sentiment.aggregator import aggregate_scores
                     sent_score = aggregate_scores(sent_results)
 
                 self._sentiments[symbol] = sent_score
 
-                signal = generate_signal(
-                    symbol,
-                    ohlcv,
-                    sent_score,
-                    buy_threshold=self.config.get("signal_buy_threshold", 0.5),
-                    sell_threshold=self.config.get("signal_sell_threshold", -0.3),
-                    sma_short=self.config.get("sma_short", 20),
-                    sma_long=self.config.get("sma_long", 50),
-                    rsi_period=self.config.get("rsi_period", 14),
-                    bb_window=self.config.get("bb_window", 20),
-                    bb_std=self.config.get("bb_std", 2.0),
-                    ema_fast=self.config.get("ema_fast", 12),
-                    ema_slow=self.config.get("ema_slow", 26),
-                    vol_window=self.config.get("volume_window", 20),
-                    tech_weight=self.config.get("tech_weight", 0.6),
-                    sent_weight=self.config.get("sent_weight", 0.4),
-                    tech_indicator_weights=tech_weights,
+                # Use strategy adapter for signal generation
+                signal_result = self.strategy.generate_signal(
+                    symbol=symbol,
+                    ohlcv=ohlcv,
+                    sentiment_score=sent_score,
+                    prices=self._prices,
+                    config=self.config,
                 )
-                signal["price"] = price or 0.0
-                self._signals[symbol] = signal["action"]
+
+                # Build signal dict for backward compatibility with DB and UI
+                signal = {
+                    "symbol": signal_result.symbol,
+                    "action": signal_result.action,
+                    "confidence": signal_result.confidence,
+                    "hybrid_score": signal_result.score,
+                    "technical_score": signal_result.metadata.get("sma_score", 0.0),
+                    "sentiment_score": sent_score,
+                    "reason": signal_result.reason,
+                    "price": price or 0.0,
+                }
+                self._signals[symbol] = signal_result.action
 
                 save_signal(
                     self.db_conn,
@@ -484,8 +675,7 @@ class TradingApp(App):
                 self.call_from_thread(self._on_signal_generated, signal)
 
                 # ── Risk management checks before auto-execution ──────────────
-                if self.config.get("auto_trading") and signal["action"] != "HOLD":
-                    # Check max drawdown
+                if self.config.get("auto_trading") and signal_result.action != "HOLD":
                     if check_max_drawdown(self._portfolio_history, self.config.get("max_drawdown", 0.15)):
                         logger.warning("Auto-trade skipped: max drawdown exceeded")
                         continue
@@ -536,8 +726,8 @@ class TradingApp(App):
         )
 
         try:
-            acct = self.client.get_account()
-            positions = self.client.get_positions()
+            acct = self.adapter.get_account()
+            positions = self.adapter.get_positions()
             positions_dict = {p.symbol: {"qty": p.qty, "avg_entry_price": p.avg_entry_price} for p in positions}
 
             if action == "BUY":
@@ -571,7 +761,7 @@ class TradingApp(App):
             if qty < 1:
                 return
 
-            result = self.client.submit_market_order(symbol, qty, action)
+            result = self.adapter.submit_market_order(symbol, qty, action)
             if result.status not in ("rejected",):
                 from trading_cli.data.db import save_trade
                 save_trade(
@@ -599,7 +789,7 @@ class TradingApp(App):
             if not confirmed:
                 return
             try:
-                result = self.client.submit_market_order(symbol, qty, action)
+                result = self.adapter.submit_market_order(symbol, qty, action)
                 if result.status not in ("rejected",):
                     from trading_cli.data.db import save_trade
                     save_trade(

@@ -65,17 +65,17 @@ class DashboardScreen(Screen):
  
     def _refresh_from_app(self) -> None:
         app = self.app
-        if not hasattr(app, "client"):
+        if not hasattr(app, "adapter"):
             return
         try:
-            acct = app.client.get_account()
+            acct = app.adapter.get_account()
             bar = self.query_one("#account-bar", AccountBar)
             bar.cash = acct.cash
             bar.equity = acct.equity
             bar.demo = app.demo_mode
             bar.market_open = app.market_open
- 
-            positions = app.client.get_positions()
+
+            positions = app.adapter.get_positions()
             self.query_one("#positions-table", PositionsTable).refresh_positions(positions)
         except Exception:
             pass

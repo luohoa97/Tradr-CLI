@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.screen import Screen
-from textual.widgets import Header, DataTable, Label, Static
+from textual.widgets import Header, DataTable, Label, Static, Input, Button
 from textual.containers import Vertical, Horizontal
 from rich.text import Text
 
 from trading_cli.widgets.ordered_footer import OrderedFooter
+
+if TYPE_CHECKING:
+    from trading_cli.strategy.backtest import BacktestResult
 
 
 class BacktestSummary(Static):
@@ -49,12 +54,15 @@ class BacktestScreen(Screen):
     ]
 
     _last_symbol: str = ""
-    _last_result: BacktestResult | None = None
+    _last_result: "BacktestResult | None" = None
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         with Vertical():
-            yield Label("[dim]Enter a symbol and press Enter to backtest · [r] re-run[/dim]", id="backtest-help")
+            with Horizontal(id="backtest-input-row"):
+                yield Label("Symbol:")
+                yield Input(placeholder="e.g. AAPL", id="backtest-symbol-input")
+                yield Button("🚀 Run", id="btn-backtest-run", variant="success")
             yield BacktestSummary(id="backtest-summary")
             yield DataTable(id="backtest-table", cursor_type="row")
         yield OrderedFooter()
@@ -68,64 +76,91 @@ class BacktestScreen(Screen):
         tbl.add_column("P&L $", key="pnl")
         tbl.add_column("Reason", key="reason")
 
-    def on_input_submitted(self, event) -> None:
+    def on_button_pressed(self, event) -> None:
+        if event.button.id == "btn-backtest-run":
+            self.action_run_backtest()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
         symbol = event.value.strip().upper()
         if symbol:
             self._last_symbol = symbol
             self._run_backtest(symbol)
 
     def action_run_backtest(self) -> None:
-        if self._last_symbol:
-            self._run_backtest(self._last_symbol)
+        # Try to get symbol from input first
+        try:
+            inp = self.query_one("#backtest-symbol-input", Input)
+            symbol = inp.value.strip().upper()
+            if symbol:
+                self._last_symbol = symbol
+            elif not self._last_symbol:
+                self.app.notify("Enter a symbol first", severity="warning")
+                return
+        except Exception:
+            if not self._last_symbol:
+                self.app.notify("Enter a symbol first", severity="warning")
+                return
+
+        self._run_backtest(self._last_symbol)
 
     def _run_backtest(self, symbol: str) -> None:
         app = self.app
-        if not hasattr(app, "client") or not hasattr(app, "config"):
+        if not hasattr(app, "adapter") or not hasattr(app, "config"):
             app.notify("App not fully initialized", severity="error")
             return
 
         self.app.notify(f"Backtesting {symbol}…", timeout=2)
 
-        from trading_cli.data.market import fetch_ohlcv_alpaca, fetch_ohlcv_yfinance
         from trading_cli.data.news import fetch_headlines_with_timestamps
         from trading_cli.strategy.backtest import BacktestEngine
 
         try:
-            # Try Alpaca historical data first, fall back to yfinance
-            client = getattr(app, "client", None)
-            use_alpaca_data = client and not client.demo_mode
-
-            if use_alpaca_data:
-                ohlcv = fetch_ohlcv_alpaca(client, symbol, days=365)
+            # Use adapter for historical data
+            adapter = getattr(app, "adapter", None)
+            if adapter and not adapter.is_demo_mode:
+                ohlcv = adapter.fetch_ohlcv(symbol, days=365)
             else:
+                # Fallback to yfinance for demo mode
+                from trading_cli.data.market import fetch_ohlcv_yfinance
                 ohlcv = fetch_ohlcv_yfinance(symbol, days=365)
 
             if ohlcv.empty:
                 self.app.notify(f"No data for {symbol}", severity="warning")
                 return
 
-            # Build news_fetcher closure with API keys from config
+            # Build news_fetcher closure using adapter
             cfg = app.config
-            alpaca_key = cfg.get("alpaca_api_key", "")
-            alpaca_secret = cfg.get("alpaca_api_secret", "")
+            adapter = getattr(app, "adapter", None)
 
             def news_fetcher(sym: str, days_ago: int = 0) -> list[tuple[str, float]]:
+                if adapter and hasattr(adapter, 'fetch_news'):
+                    headlines = adapter.fetch_news(sym, max_articles=30, days_ago=days_ago)
+                    if headlines:
+                        return headlines
+                # Fallback to Alpaca News via data module
                 return fetch_headlines_with_timestamps(
                     sym,
                     days_ago=days_ago,
-                    alpaca_key=alpaca_key,
-                    alpaca_secret=alpaca_secret,
+                    alpaca_key=cfg.get("alpaca_api_key", ""),
+                    alpaca_secret=cfg.get("alpaca_api_secret", ""),
                     max_articles=30,
                 )
 
             finbert = getattr(app, "finbert", None)
-            has_api_keys = bool(alpaca_key and alpaca_secret)
+            has_adapter_news = adapter and hasattr(adapter, 'fetch_news')
+            has_api_keys = bool(cfg.get("alpaca_api_key") and cfg.get("alpaca_api_secret"))
+
+            # Use the app's strategy adapter if available
+            strategy = getattr(app, "strategy", None)
+            strategy_name = strategy.info().name if strategy else "default"
+            self.app.notify(f"Strategy: {strategy_name}", timeout=2)
 
             engine = BacktestEngine(
                 config=cfg,
                 finbert=finbert if finbert and finbert.is_loaded else None,
-                news_fetcher=news_fetcher if has_api_keys else None,
-                use_sentiment=bool(has_api_keys and finbert and finbert.is_loaded),
+                news_fetcher=news_fetcher if (has_adapter_news or has_api_keys) else None,
+                use_sentiment=bool((has_adapter_news or has_api_keys) and finbert and finbert.is_loaded),
+                strategy=strategy,
             )
             result = engine.run(symbol, ohlcv, initial_capital=100_000.0)
             self._display_result(result)
@@ -144,13 +179,13 @@ class BacktestScreen(Screen):
         tbl.clear()
         for trade in result.trades:
             action_style = "bold green" if trade.action == "BUY" else "bold red"
-            pnl_str = Text(f"{trade.pnl:+,.2f}" if trade.pnl != 0 else "—",
-                           style="green" if trade.pnl > 0 else ("red" if trade.pnl < 0 else "dim"))
+            pnl_val = trade.pnl if trade.pnl is not None else 0
+            pnl_str = f"{pnl_val:+,.2f}" if pnl_val != 0 else "—"
             tbl.add_row(
                 trade.timestamp[:10],
                 Text(trade.action, style=action_style),
                 f"{trade.price:.2f}",
                 str(trade.qty),
-                pnl_str,
-                trade.reason[:50],
+                Text(pnl_str, style="green" if pnl_val > 0 else ("red" if pnl_val < 0 else "dim")),
+                trade.reason[:50] if trade.reason else "",
             )

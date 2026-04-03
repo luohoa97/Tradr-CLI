@@ -71,6 +71,7 @@ class BacktestEngine:
         finbert=None,
         news_fetcher=None,
         use_sentiment: bool = True,
+        strategy=None,
     ):
         """
         Args:
@@ -80,11 +81,14 @@ class BacktestEngine:
                          Returns list of (headline, unix_timestamp) tuples.
             use_sentiment: If False, skip all sentiment scoring regardless of
                           whether finbert/news_fetcher are provided.
+            strategy: StrategyAdapter instance. If None, falls back to legacy
+                      hardcoded technical + sentiment pipeline.
         """
         self.config = config
         self.finbert = finbert
         self.news_fetcher = news_fetcher
         self.use_sentiment = use_sentiment
+        self.strategy = strategy
 
     def run(
         self,
@@ -163,13 +167,6 @@ class BacktestEngine:
             current_price = float(current_bar.get("Close", current_bar.get("close", 0)))
             current_date = str(current_bar.get("Date", df.index[i]))
 
-            # Technical score
-            tech = technical_score(
-                historical_ohlcv, sma_short, sma_long, rsi_period,
-                bb_window, bb_std, ema_fast, ema_slow, vol_window,
-                tech_weights,
-            )
-
             # Sentiment score — fetches historical news for the current walk-forward date
             sent_score = 0.0
             if self.use_sentiment and self.finbert and self.news_fetcher:
@@ -187,15 +184,42 @@ class BacktestEngine:
                 except Exception:
                     pass
 
-            hybrid = tech_weight * tech + sent_weight * sent_score
-
             # Max drawdown check
             if check_max_drawdown(equity_values, max_dd):
                 break  # Stop backtest if drawdown exceeded
 
-            # Generate signal
-            if hybrid >= buy_threshold and position_qty == 0:
-                # BUY signal
+            # Generate signal — use strategy adapter if available, else legacy
+            if self.strategy is not None:
+                # Use strategy adapter
+                signal_result = self.strategy.generate_signal(
+                    symbol=symbol,
+                    ohlcv=historical_ohlcv,
+                    sentiment_score=sent_score,
+                    config=self.config,
+                )
+                action = signal_result.action
+                score = signal_result.score
+                reason = signal_result.reason
+                buy_threshold = self.config.get("signal_buy_threshold", 0.5)
+                sell_threshold = self.config.get("signal_sell_threshold", -0.3)
+            else:
+                # Legacy hardcoded technical + sentiment
+                tech = technical_score(
+                    historical_ohlcv, sma_short, sma_long, rsi_period,
+                    bb_window, bb_std, ema_fast, ema_slow, vol_window,
+                    tech_weights,
+                )
+                hybrid = tech_weight * tech + sent_weight * sent_score
+                score = hybrid
+                if hybrid >= buy_threshold:
+                    action = "BUY"
+                elif hybrid <= sell_threshold:
+                    action = "SELL"
+                else:
+                    action = "HOLD"
+                reason = f"hybrid={hybrid:.3f} tech={tech:.3f}"
+
+            if action == "BUY" and position_qty == 0:
                 qty = calculate_position_size(
                     cash + position_qty * position_avg_price,
                     current_price,
@@ -205,7 +229,6 @@ class BacktestEngine:
                 if qty > 0 and cash >= qty * current_price:
                     cost = qty * current_price
                     cash -= cost
-                    # Update position average price
                     total_shares = position_qty + qty
                     position_avg_price = (
                         (position_avg_price * position_qty + current_price * qty) / total_shares
@@ -218,14 +241,13 @@ class BacktestEngine:
                         action="BUY",
                         price=current_price,
                         qty=qty,
-                        reason=f"hybrid={hybrid:.3f} tech={tech:.3f}",
+                        reason=reason,
                     ))
 
-            elif hybrid <= sell_threshold and position_qty > 0:
-                # SELL signal or stop-loss
-                sell_reason = f"hybrid={hybrid:.3f}"
+            elif action == "SELL" and position_qty > 0:
+                sell_reason = reason
                 if check_stop_loss(position_avg_price, current_price, stop_loss_pct):
-                    sell_reason = "stop-loss"
+                    sell_reason = f"stop-loss ({reason})"
 
                 proceeds = position_qty * current_price
                 pnl = (current_price - position_avg_price) * position_qty
