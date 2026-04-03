@@ -1,0 +1,34 @@
+[project]
+name = "trading-cli"
+version = "0.1.0"
+description = "Full-screen TUI AI trading app with FinBERT sentiment analysis"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+    "textual>=0.61.0",
+    "rich>=13.7.0",
+    "click>=8.1.7",
+    "alpaca-py>=0.28.0",
+    "transformers>=4.40.0",
+    "torch>=2.2.0",
+    "yfinance>=0.2.38",
+    "pandas>=2.2.0",
+    "numpy>=1.26.0",
+    "toml>=0.10.2",
+    "scipy>=1.12.0",
+]
+ 
+[project.scripts]
+trading-cli = "trading_cli.__main__:main"
+trading-cli-dev = "trading_cli.run_dev:main"
+
+[project.optional-dependencies]
+dev = ["watchfiles>=0.20.0"]
+ 
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+ 
+[tool.hatch.build.targets.wheel]
+packages = ["trading_cli"]
