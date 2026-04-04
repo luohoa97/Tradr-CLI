@@ -46,7 +46,7 @@ def get_max_batch_size(model, input_dim, seq_len, device, start_batch=128):
     if device.type == 'cpu':
         return 64
         
-    print("🔍 Searching for optimal batch size for your GPU...")
+    print("🔍 Searching for optimal batch size for your GPU...", flush=True)
     batch_size = start_batch
     last_success = batch_size
     
@@ -74,7 +74,7 @@ def get_max_batch_size(model, input_dim, seq_len, device, start_batch=128):
     except RuntimeError as e:
         pbar.close()
         if "out of memory" in str(e).lower():
-            print(f"💡 GPU Hit limit at {batch_size}. Using {last_success} as optimal batch.")
+            print(f"💡 GPU Hit limit at {batch_size}. Using {last_success} as optimal batch.", flush=True)
             torch.cuda.empty_cache()
         else:
             raise e
@@ -112,7 +112,7 @@ def train():
             logger.info("🚀 Starting on-the-fly dataset generation (10 years, 70 symbols)...")
             build_dataset()
 
-    print("🚀 Loading dataset from data/trading_dataset.pt...")
+    print("🚀 Loading dataset from data/trading_dataset.pt...", flush=True)
     data = torch.load("data/trading_dataset.pt")
     X, y = data["X"], data["y"]
     
@@ -142,7 +142,7 @@ def train():
     logger.info("Starting training on %d samples (%d features)...", len(X), input_dim)
     
     # 5. Start Training
-    print(f"🚀 Starting training loop (Batch Size: {batch_size})...")
+    print(f"🚀 Starting training loop (Batch Size: {batch_size})...", flush=True)
     best_val_loss = float('inf')
     
     for epoch in range(EPOCHS):
