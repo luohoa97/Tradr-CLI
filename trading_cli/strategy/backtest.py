@@ -137,6 +137,11 @@ class BacktestEngine:
         trades: list[BacktestTrade] = []
         equity_values = [initial_capital]
 
+        # Normalize column names to lowercase for consistent access
+        df.columns = [c.lower() for c in df.columns]
+        if "adj close" in df.columns:
+            df = df.rename(columns={"adj close": "adj_close"})
+
         # Config params
         buy_threshold = self.config.get("signal_buy_threshold", 0.5)
         sell_threshold = self.config.get("signal_sell_threshold", -0.3)
@@ -203,8 +208,8 @@ class BacktestEngine:
 
             historical_ohlcv = df.iloc[:i]
             current_bar = df.iloc[i]
-            current_price = float(current_bar.get("Close", current_bar.get("close", 0)))
-            current_date = str(current_bar.get("Date", df.index[i]))
+            current_price = float(current_bar["close"])
+            current_date = str(current_bar.get("date", df.index[i]))
 
             # Use pre-cached sentiment score
             sent_score = sent_scores.get(i, 0.0)
@@ -298,7 +303,7 @@ class BacktestEngine:
 
         # Close any remaining position at last price
         if position_qty > 0 and len(df) > 0:
-            last_price = float(df.iloc[-1].get("Close", df.iloc[-1].get("close", 0)))
+            last_price = float(df.iloc[-1]["close"])
             last_date = str(df.index[-1])
             pnl = (last_price - position_avg_price) * position_qty
             cash += position_qty * last_price
