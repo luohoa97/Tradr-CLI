@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 # Hyperparameters
 EPOCHS = 100
-BATCH_SIZE = 1024 # Significant increase for T4/A100 utilization
+BATCH_SIZE = 8192 # Aggressive batch size to saturate T4 GPU (16GB)
 LR = 0.0003
 HIDDEN_DIM = 512
 LAYERS = 8
