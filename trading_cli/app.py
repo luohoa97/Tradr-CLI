@@ -477,7 +477,16 @@ class TradingApp(App):
         self.adapter = create_trading_adapter(self.config)
         self.demo_mode = self.adapter.is_demo_mode
 
-        # 5. Strategy adapter
+        # 5. Asset search engine (for autocomplete)
+        status("Loading asset search index…")
+        from trading_cli.data.asset_search import AssetSearchEngine
+        self.asset_search = AssetSearchEngine()
+        asset_count = self.asset_search.load_assets(self.adapter)
+        status(f"Asset search ready: {asset_count} assets indexed")
+        # Load embedding model in background (optional, improves search quality)
+        self._load_embedding_model_async()
+
+        # 6. Strategy adapter
         status(f"Loading strategy: {self.config.get('strategy_id', 'hybrid')}…")
         from trading_cli.strategy.strategy_factory import create_trading_strategy
         self.strategy = create_trading_strategy(self.config)
@@ -525,10 +534,30 @@ class TradingApp(App):
             )
  
     def _start_workers(self) -> None:
+        """Start all background polling workers."""
         self._running = True
+        auto_enabled = self.config.get("auto_trading", False)
+        logger.info("Starting workers (auto_trading=%s)", auto_enabled)
         self._poll_prices()
         self._poll_positions()
         self._poll_signals()
+        if auto_enabled:
+            logger.info("Auto-trading enabled — first signal cycle starting")
+
+    @work(thread=True, name="load-embeddings", exclusive=False)
+    def _load_embedding_model_async(self) -> None:
+        """Load embedding model for semantic asset search (background)."""
+        try:
+            self.asset_search.load_embedding_model()
+            if self.asset_search.has_semantic_search:
+                self.call_from_thread(
+                    self.notify,
+                    "Semantic asset search enabled",
+                    severity="information",
+                    timeout=3,
+                )
+        except Exception as exc:
+            logger.warning("Failed to load embedding model: %s", exc)
 
     def _stop_workers(self) -> None:
         """Signal all workers to stop."""
@@ -577,7 +606,8 @@ class TradingApp(App):
     @work(thread=True, name="poll-signals", exclusive=False)
     def _poll_signals(self) -> None:
         """Generate trading signals and optionally execute auto-trades."""
-        time.sleep(10)  # short delay so prices are available first
+        time.sleep(5)  # short delay so prices are available first
+        logger.info("Signal poll worker started, running first cycle")
         while self._running:
             try:
                 self._run_signal_cycle()
@@ -593,6 +623,10 @@ class TradingApp(App):
         from trading_cli.strategy.risk import check_max_drawdown
         from trading_cli.data.db import save_signal
 
+        auto_enabled = self.config.get("auto_trading", False)
+        cycle_time = datetime.now().strftime("%H:%M:%S")
+        logger.info("Running signal cycle at %s (auto_trading=%s)", cycle_time, auto_enabled)
+
         # Build event weight map from config
         event_weights = {
             EventType.EARNINGS: self.config.get("event_weight_earnings", EVENT_WEIGHTS[EventType.EARNINGS]),
@@ -603,17 +637,26 @@ class TradingApp(App):
         }
 
         half_life = self.config.get("sentiment_half_life_hours", 24.0)
+        auto_enabled = self.config.get("auto_trading", False)
+        cycle_time = datetime.now().strftime("%H:%M:%S")
+
+        # Update dashboard with cycle time
+        self.call_from_thread(self._on_cycle_completed, cycle_time, auto_enabled)
 
         for symbol in list(self.watchlist):
             try:
                 ohlcv = fetch_ohlcv_yfinance(symbol, days=90)
                 if ohlcv.empty:
+                    logger.warning(f"No OHLCV data for {symbol}, skipping")
                     continue
 
                 price = self._prices.get(symbol)
                 if price is None:
                     from trading_cli.data.market import get_latest_quote_yfinance
                     price = get_latest_quote_yfinance(symbol)
+                    if price is None:
+                        logger.warning(f"No price data for {symbol}, skipping")
+                        continue
 
                 headlines = fetch_headlines(symbol, max_articles=10)
 
@@ -624,6 +667,13 @@ class TradingApp(App):
                 timestamps = []
                 if self.finbert and self.finbert.is_loaded:
                     sent_results = self.finbert.analyze_with_cache(headlines, self.db_conn)
+                elif not self.finbert or not self.finbert.is_loaded:
+                    logger.warning(f"FinBERT not loaded for {symbol}, using neutral sentiment")
+                    error_detail = self.finbert.load_error if self.finbert else "FinBERT not initialized"
+                    self.call_from_thread(
+                        self._on_autotrade_error,
+                        f"FinBERT not loaded: {error_detail}"
+                    )
 
                 # Use weighted aggregation if we have classifications
                 if classifications and sent_results:
@@ -675,22 +725,61 @@ class TradingApp(App):
                 self.call_from_thread(self._on_signal_generated, signal)
 
                 # ── Risk management checks before auto-execution ──────────────
-                if self.config.get("auto_trading") and signal_result.action != "HOLD":
+                if auto_enabled and signal_result.action != "HOLD":
+                    logger.info("Auto-trade %s signal for %s (confidence=%.2f)", signal_result.action, symbol, signal_result.confidence)
                     if check_max_drawdown(self._portfolio_history, self.config.get("max_drawdown", 0.15)):
                         logger.warning("Auto-trade skipped: max drawdown exceeded")
+                        self.call_from_thread(
+                            self._on_autotrade_blocked,
+                            "Auto-trade blocked: Max drawdown exceeded"
+                        )
                         continue
+                    logger.info("Executing auto-trade: %s %s", signal_result.action, symbol)
                     self.call_from_thread(self._auto_execute, signal)
+                elif auto_enabled and signal_result.action == "HOLD":
+                    logger.debug(f"HOLD signal for {symbol}, no action taken")
+                elif not auto_enabled:
+                    logger.debug("Auto-trading disabled, signal %s for %s not executed", signal_result.action, symbol)
 
             except Exception as exc:
                 logger.warning("Signal error for %s: %s", symbol, exc)
+                self.call_from_thread(
+                    self._on_autotrade_error,
+                    f"Error processing {symbol}: {exc}"
+                )
  
     # ── UI callbacks (called from thread via call_from_thread) ─────────────────
- 
+
     def _on_prices_updated(self) -> None:
         try:
             wl_screen = self.get_screen("watchlist")
             if hasattr(wl_screen, "update_data"):
                 wl_screen.update_data(self._prices, self._sentiments, self._signals)
+        except Exception:
+            pass
+
+    def _on_cycle_completed(self, cycle_time: str, auto_enabled: bool) -> None:
+        """Called when a signal cycle completes (from worker thread)."""
+        try:
+            dash = self.get_screen("dashboard")
+            if hasattr(dash, "update_autotrade_status"):
+                dash.update_autotrade_status(auto_enabled, cycle_time)
+        except Exception:
+            pass
+
+    def _on_autotrade_error(self, error_msg: str) -> None:
+        """Called when auto-trade encounters an error."""
+        try:
+            dash = self.get_screen("dashboard")
+            if hasattr(dash, "update_autotrade_status"):
+                dash.update_autotrade_status(error=error_msg)
+        except Exception:
+            pass
+
+    def _on_autotrade_blocked(self, reason: str) -> None:
+        """Called when auto-trade is blocked by risk management."""
+        try:
+            self.notify(reason, severity="warning", timeout=5)
         except Exception:
             pass
  
@@ -737,6 +826,10 @@ class TradingApp(App):
                 )
                 if not ok:
                     logger.warning("Auto-buy blocked: %s", reason)
+                    self.call_from_thread(
+                        self._on_autotrade_blocked,
+                        f"Auto-buy {symbol} blocked: {reason}"
+                    )
                     return
 
             elif action == "SELL":
@@ -750,6 +843,10 @@ class TradingApp(App):
                 ok, reason = validate_sell(symbol, 1, positions_dict)
                 if not ok:
                     logger.warning("Auto-sell blocked: %s", reason)
+                    self.call_from_thread(
+                        self._on_autotrade_blocked,
+                        f"Auto-sell {symbol} blocked: {reason}"
+                    )
                     return
 
             qty = calculate_position_size(
@@ -759,6 +856,7 @@ class TradingApp(App):
                 max_position_pct=0.10,
             )
             if qty < 1:
+                logger.info(f"Auto-trade skipped: calculated qty < 1 for {symbol}")
                 return
 
             result = self.adapter.submit_market_order(symbol, qty, action)
@@ -774,9 +872,18 @@ class TradingApp(App):
                     f"AUTO {action} {qty} {symbol} @ ${result.filled_price or price:.2f}",
                     timeout=5,
                 )
+            else:
+                logger.warning(f"Auto-trade rejected: {symbol} {action}")
+                self.call_from_thread(
+                    self._on_autotrade_blocked,
+                    f"Order rejected for {symbol} {action}"
+                )
         except Exception as exc:
             logger.error("Auto-execute error: %s", exc)
-            self.notify(f"Auto-trade failed: {exc}", severity="error")
+            self.call_from_thread(
+                self._on_autotrade_error,
+                f"Auto-execute failed: {exc}"
+            )
  
     # ── Manual order execution ─────────────────────────────────────────────────
  

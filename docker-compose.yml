@@ -1,0 +1,21 @@
+services:
+  trading-cli:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ai-trading:latest
+    container_name: trading-cli
+    environment:
+      - TOKENIZERS_PARALLELISM=false
+      - TRANSFORMERS_VERBOSITY=error
+      - HF_HUB_DISABLE_TELEMETRY=1
+      - TQDM_DISABLE=1
+    volumes:
+      - hf-cache:/root/.cache/huggingface
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
+
+volumes:
+  hf-cache:
+    name: hf-cache

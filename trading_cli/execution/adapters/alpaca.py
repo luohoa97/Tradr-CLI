@@ -286,3 +286,44 @@ class AlpacaAdapter(TradingAdapter):
         except Exception as exc:
             logger.warning("Alpaca news fetch failed for %s: %s", symbol, exc)
             return []
+
+    # ── Asset Search ──────────────────────────────────────────────────────────
+
+    def get_all_assets(self) -> list[dict[str, str]]:
+        """Fetch all available assets with their symbols and company names.
+        
+        Returns:
+            List of dicts with 'symbol' and 'name' keys.
+        """
+        if self._demo:
+            # Return a basic hardcoded list for demo mode
+            return [
+                {"symbol": "AAPL", "name": "Apple Inc."},
+                {"symbol": "TSLA", "name": "Tesla Inc."},
+                {"symbol": "NVDA", "name": "NVIDIA Corporation"},
+                {"symbol": "MSFT", "name": "Microsoft Corporation"},
+                {"symbol": "AMZN", "name": "Amazon.com Inc."},
+                {"symbol": "GOOGL", "name": "Alphabet Inc. Class A"},
+                {"symbol": "META", "name": "Meta Platforms Inc."},
+                {"symbol": "SPY", "name": "SPDR S&P 500 ETF Trust"},
+            ]
+        
+        try:
+            from alpaca.trading.requests import GetAssetsRequest
+            from alpaca.trading.enums import AssetStatus, AssetClass
+            
+            # Get all active US equity assets
+            request = GetAssetsRequest(
+                status=AssetStatus.ACTIVE,
+                asset_class=AssetClass.US_EQUITY,
+            )
+            assets = self._trading_client.get_all_assets(request)
+            
+            return [
+                {"symbol": asset.symbol, "name": asset.name}
+                for asset in assets
+                if asset.tradable
+            ]
+        except Exception as exc:
+            logger.warning("Failed to fetch assets: %s", exc)
+            return []

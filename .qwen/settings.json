@@ -1,7 +1,13 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python *)"
+      "Bash(python *)",
+      "WebFetch(docs.alpaca.markets)",
+      "WebFetch(alpaca.markets)",
+      "WebSearch",
+      "WebFetch(stage.partners.liveu.tv)",
+      "WebFetch(pypi.org)",
+      "Bash(cat *)"
     ]
   },
   "$version": 3

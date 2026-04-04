@@ -10,8 +10,8 @@ from pathlib import Path
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.screen import Screen
-from textual.widgets import Header, DataTable, Input, Label, Static
-from textual.containers import Vertical, Horizontal
+from textual.widgets import Header, DataTable, Input
+from textual.containers import Vertical
 from rich.text import Text
 
 from trading_cli.widgets.ordered_footer import OrderedFooter
@@ -21,21 +21,15 @@ class TradesScreen(Screen):
     """Screen ID 4 — all executed trades with filter and export."""
  
     BINDINGS = [
-        Binding("e", "export_csv", "Export CSV", show=False),
-        Binding("r", "refresh_data", "Refresh", show=False),
-        Binding("f", "focus_filter", "Filter", show=False),
+        Binding("e", "export_csv", "Export", show=True),
+        Binding("r", "refresh_data", "Refresh", show=True),
+        Binding("f", "focus_filter", "Filter", show=True),
     ]
- 
+
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         with Vertical():
-            with Horizontal(id="trades-filter-row"):
-                yield Label("Filter: ", id="filter-label")
-                yield Input(placeholder="symbol or action…", id="trades-filter")
-            yield Label(
-                "[dim][e] export CSV · [r] refresh · [f] filter[/dim]",
-                id="trades-help",
-            )
+            yield Input(placeholder="Filter by symbol or action…", id="trades-filter")
             yield DataTable(id="trades-table", cursor_type="row")
         yield OrderedFooter()
  

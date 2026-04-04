@@ -91,9 +91,40 @@ class ConfigScreen(Screen):
             strategy_options = ["hybrid"]
         strategy_select_options = [(opt.title(), opt) for opt in strategy_options]
 
+        # Build exchange provider options from adapter registry
+        from trading_cli.execution.adapters.registry import list_adapters
+        current_provider = cfg.get("adapter_id", "yfinance")
+        try:
+            adapter_ids = list_adapters()
+        except Exception:
+            adapter_ids = ["yfinance", "alpaca", "binance", "kraken"]
+        provider_display = {
+            "alpaca": "Alpaca (Stocks/ETFs)",
+            "yfinance": "Yahoo Finance (Demo)",
+            "binance": "Binance (Crypto)",
+            "kraken": "Kraken (Crypto)",
+        }
+        provider_select_options = [
+            (provider_display.get(aid, aid.title()), aid) for aid in adapter_ids
+        ]
+
+        # Build sentiment model options
+        current_sentiment = cfg.get("sentiment_model", "finbert")
+        sentiment_select_options = [
+            ("FinBERT", "finbert"),
+        ]
+
         yield Header(show_clock=True)
         with ScrollableContainer(id="config-scroll"):
             yield Label("[bold]Configuration[/bold]  [dim](Ctrl+S to save, ESC to cancel)[/dim]")
+
+            with Collapsible(title="🏦 Exchange Provider", id="collapsible-provider"):
+                yield ConfigRow(
+                    "Exchange",
+                    "adapter_id",
+                    current_provider,
+                    options=provider_select_options,
+                )
 
             with Collapsible(title="🔑 Alpaca API", id="collapsible-api"):
                 yield ConfigRow("API Key", "alpaca_api_key", cfg.get("alpaca_api_key", ""), password=True)
@@ -117,6 +148,12 @@ class ConfigScreen(Screen):
                     options=strategy_select_options,
                 )
                 yield Static("", id="strategy-info")
+                yield ConfigRow(
+                    "Sentiment model",
+                    "sentiment_model",
+                    current_sentiment,
+                    options=sentiment_select_options,
+                )
 
             with Collapsible(title="⚖️ Strategy Weights", id="collapsible-weights"):
                 yield ConfigRow("Technical weight", "tech_weight", str(cfg.get("tech_weight", 0.6)))
@@ -222,8 +259,22 @@ class ConfigScreen(Screen):
 
         # Strategy selector (Select widget)
         try:
-            sel = self.query_one("#select-strategy_id", Select)
+            sel = self.query_one("#input-strategy_id", Select)
             cfg["strategy_id"] = str(sel.value)
+        except Exception:
+            pass
+
+        # Exchange provider (Select widget)
+        try:
+            sel = self.query_one("#input-adapter_id", Select)
+            cfg["adapter_id"] = str(sel.value)
+        except Exception:
+            pass
+
+        # Sentiment model (Select widget)
+        try:
+            sel = self.query_one("#input-sentiment_model", Select)
+            cfg["sentiment_model"] = str(sel.value)
         except Exception:
             pass
 
@@ -260,7 +311,7 @@ class ConfigScreen(Screen):
         os.execv(python, [python, script])
 
     def on_select_changed(self, event: Select.Changed) -> None:
-        """Update strategy info display when strategy changes."""
+        """Update info display when selection changes."""
         if event.select.id == "input-strategy_id":
             self._update_strategy_info(str(event.value))
 

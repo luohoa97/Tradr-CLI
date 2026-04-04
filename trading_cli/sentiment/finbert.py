@@ -8,6 +8,20 @@ from typing import Callable
  
 logger = logging.getLogger(__name__)
  
+# File descriptor limit is set in __main__.py at startup
+# This module-level code is kept for backward compatibility when imported directly
+try:
+    import resource
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    target_limit = 256
+    if soft > target_limit:
+        new_soft = min(target_limit, hard)
+        resource.setrlimit(resource.RLIMIT_NOFILE, (new_soft, hard))
+        logger.info(f"Auto-adjusted file descriptor limit from {soft} to {new_soft}")
+except Exception as e:
+    if logger:
+        logger.debug(f"Could not adjust file descriptor limit: {e}")
+ 
 _MODEL_NAME = "ProsusAI/finbert"
 _LABELS = ["positive", "negative", "neutral"]
  
@@ -30,14 +44,16 @@ class FinBERTAnalyzer:
         self._tokenizer = None
         self._loaded = False
         self._load_error: str | None = None
-        self._device = None  # Will be set to 'cuda' or 'cpu'
+        self._device: str = "cpu"
+        self._tried_fds_workaround: bool = False
  
     @classmethod
-    def get_instance(cls) -> "FinBERTAnalyzer":
+    def get_instance(cls) -> FinBERTAnalyzer:
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:
                     cls._instance = FinBERTAnalyzer()
+        assert cls._instance is not None
         return cls._instance
  
     @property
@@ -75,7 +91,6 @@ class FinBERTAnalyzer:
 
         try:
             import os
-            import sys
 
             # Suppress warnings
             os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -83,19 +98,6 @@ class FinBERTAnalyzer:
             os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
             # Disable tqdm to avoid threading issues
             os.environ["TQDM_DISABLE"] = "1"
-
-            # Proactively set multiprocessing start method to 'spawn' on Linux
-            # This prevents fds_to_keep errors in multithreaded contexts
-            if sys.platform.startswith('linux'):
-                try:
-                    import multiprocessing
-                    try:
-                        multiprocessing.set_start_method('spawn', force=True)
-                        logger.info("Set multiprocessing method to 'spawn'")
-                    except RuntimeError:
-                        pass  # Already set, which is fine
-                except (ImportError, AttributeError):
-                    pass
 
             import transformers
             transformers.logging.set_verbosity_error()
@@ -129,22 +131,19 @@ class FinBERTAnalyzer:
             from transformers import AutoModelForSequenceClassification
 
             # Use low_cpu_mem_usage for faster loading with meta tensors
-            # device_map="auto" will place model on GPU if available
-            if self._device == "cuda":
-                device_map = "auto"
-            else:
-                device_map = None
-
+            # CRITICAL: Do NOT use device_map="auto" as it can trigger subprocess issues
+            # Instead, load on CPU first, then move to device manually
             self._model = AutoModelForSequenceClassification.from_pretrained(
                 _MODEL_NAME,
-                low_cpu_mem_usage=True,  # Faster loading with meta tensors
-                device_map=device_map,
+                low_cpu_mem_usage=True,
+                device_map=None,  # Avoid subprocess spawning
+                # Disable features that might use subprocesses
+                trust_remote_code=False,
             )
             self._model.eval()
 
-            # Move to device if not using device_map
-            if device_map is None:
-                self._model = self._model.to(self._device)
+            # Move to device after loading
+            self._model = self._model.to(self._device)
 
             _cb(f"FinBERT ready on {self._device.upper()} ✓")
             self._loaded = True
@@ -152,9 +151,11 @@ class FinBERTAnalyzer:
 
         except Exception as exc:
             import traceback
+            import sys as sys_mod
+            full_traceback = traceback.format_exc()
             msg = f"FinBERT load failed: {exc}"
             logger.error(msg)
-            logger.debug("Load traceback:\n%s", traceback.format_exc())
+            logger.error("Full traceback:\n%s", full_traceback)
             self._load_error = msg
             if progress_callback:
                 progress_callback(msg)
@@ -163,11 +164,24 @@ class FinBERTAnalyzer:
             if "fds_to_keep" in str(exc) and not getattr(self, '_tried_fds_workaround', False):
                 self._tried_fds_workaround = True
                 logger.info("Attempting retry with fds_to_keep workaround...")
+                logger.info("Original traceback:\n%s", full_traceback)
                 # Preserve original error if workaround also fails
                 original_error = msg
                 success = self._load_with_fds_workaround(progress_callback)
                 if not success and not self._load_error:
-                    self._load_error = original_error
+                    # Add helpful context about Python version
+                    python_version = sys_mod.version
+                    self._load_error = (
+                        f"{original_error}\n"
+                        f"\n"
+                        f"This is a known issue with Python 3.12+ and transformers.\n"
+                        f"Your Python version: {python_version}\n"
+                        f"\n"
+                        f"To fix this, consider:\n"
+                        f"  1. Downgrade to Python 3.11 (recommended)\n"
+                        f"  2. Or upgrade transformers: pip install -U transformers>=4.45.0\n"
+                        f"  3. Or use the --no-sentiment flag to skip FinBERT loading"
+                    )
                 return success
 
             return False
@@ -184,50 +198,31 @@ class FinBERTAnalyzer:
 
         try:
             import os
-            import sys
 
             # Suppress warnings
             os.environ["TOKENIZERS_PARALLELISM"] = "false"
             os.environ["TRANSFORMERS_VERBOSITY"] = "error"
             os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
-            # Critical: Disable multiprocessing in tokenizers to avoid fds_to_keep errors
-            os.environ["TOKENIZERS_PARALLELISM"] = "false"
-            # Disable tqdm to avoid threading issues
             os.environ["TQDM_DISABLE"] = "1"
 
-            # Try multiple strategies for fds_to_keep error
-            
-            # Strategy 1: Set multiprocessing start method to 'spawn'
-            # This avoids inheriting file descriptors from parent process
-            try:
-                import multiprocessing
-                if sys.platform.startswith('linux'):
-                    # Only set on Linux where the issue occurs
-                    try:
-                        multiprocessing.set_start_method('spawn', force=True)
-                        _cb("Set multiprocessing method to 'spawn'")
-                    except RuntimeError:
-                        pass  # Already set, which is fine
-            except (ImportError, AttributeError):
-                pass
-
-            # Strategy 2: Lower file descriptor limit if it's very high
+            # Try to lower file descriptor limit if it's very high
             try:
                 import resource
                 soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
                 _cb(f"Current file descriptor limit: soft={soft}, hard={hard}")
-                # If the soft limit is extremely high, reduce it to avoid issues
-                if soft > 1048576:  # > 1M file descriptors
-                    new_limit = min(soft, 65536)
-                    resource.setrlimit(resource.RLIMIT_NOFILE, (new_limit, hard))
-                    _cb(f"Lowered file descriptor limit from {soft} to {new_limit}")
+                # Force lower limit for workaround attempt - must be very low for Python 3.14
+                target_limit = 128
+                if soft > target_limit:
+                    new_soft = min(target_limit, hard)
+                    resource.setrlimit(resource.RLIMIT_NOFILE, (new_soft, hard))
+                    _cb(f"Lowered file descriptor limit from {soft} to {new_soft} (emergency fallback)")
             except (ImportError, ValueError, OSError) as e:
                 logger.debug(f"Could not adjust file descriptor limit: {e}")
 
             import transformers
             transformers.logging.set_verbosity_error()
 
-            # Auto-detect device (same as main load)
+            # Auto-detect device
             import torch
             if torch.cuda.is_available():
                 self._device = "cuda"
@@ -235,22 +230,24 @@ class FinBERTAnalyzer:
                 self._device = "mps"
             else:
                 self._device = "cpu"
-                # Explicitly set thread count for CPU
+                # Limit CPU threads for more stable loading
                 torch.set_num_threads(min(torch.get_num_threads(), 4))
-                _cb(f"Retrying FinBERT load on {self._device.upper()} ({torch.get_num_threads()} threads)")
 
-            _cb(f"Retrying FinBERT load on {self._device.upper()}...")
+            _cb(f"Retrying FinBERT load on {self._device.upper()} ({torch.get_num_threads()} threads)...")
 
             from transformers import AutoTokenizer, AutoModelForSequenceClassification
 
             # Use fast tokenizer and optimized loading
+            # Disable subprocess-based tokenization
+            os.environ["TOKENIZERS_PARALLELISM"] = "false"
             self._tokenizer = AutoTokenizer.from_pretrained(
                 _MODEL_NAME,
                 use_fast=True,
             )
 
             # Use device_map for auto placement
-            device_map = "auto" if self._device == "cuda" else None
+            # For Python 3.14+, avoid using device_map="auto" which can trigger subprocess issues
+            device_map = None
             self._model = AutoModelForSequenceClassification.from_pretrained(
                 _MODEL_NAME,
                 low_cpu_mem_usage=True,
@@ -258,8 +255,8 @@ class FinBERTAnalyzer:
             )
             self._model.eval()
 
-            if device_map is None:
-                self._model = self._model.to(self._device)
+            # Manually move to device
+            self._model = self._model.to(self._device)
 
             _cb(f"FinBERT ready on {self._device.upper()} ✓")
             self._loaded = True
@@ -274,6 +271,108 @@ class FinBERTAnalyzer:
             # Log additional context for debugging
             import traceback
             logger.debug("Workaround load traceback:\n%s", traceback.format_exc())
+            
+            # If still failing with fds_to_keep, try one more time with subprocess isolation
+            if "fds_to_keep" in str(exc):
+                logger.info("Attempting final retry with subprocess isolation...")
+                return self._load_with_subprocess_isolation(progress_callback)
+            
+            return False
+
+    def _load_with_subprocess_isolation(self, progress_callback) -> bool:
+        """Final attempt: load model with maximum subprocess isolation for Python 3.14+."""
+        if self._loaded:
+            return True
+
+        def _cb(msg: str) -> None:
+            if progress_callback:
+                progress_callback(msg)
+            logger.info(msg)
+
+        try:
+            import os
+            import subprocess
+            import sys
+
+            # Set maximum isolation before loading
+            os.environ["TOKENIZERS_PARALLELISM"] = "false"
+            os.environ["TRANSFORMERS_VERBOSITY"] = "error"
+            os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
+            os.environ["TQDM_DISABLE"] = "1"
+            
+            # Additional isolation for Python 3.14
+            os.environ["RAYON_RS_NUM_CPUS"] = "1"
+            os.environ["OMP_NUM_THREADS"] = "1"
+
+            # Force file descriptor limit to minimum
+            try:
+                import resource
+                soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+                resource.setrlimit(resource.RLIMIT_NOFILE, (64, hard))
+                _cb("Set file descriptor limit to 64 (maximum isolation)")
+            except Exception:
+                pass
+
+            import transformers
+            transformers.logging.set_verbosity_error()
+
+            import torch
+            if torch.cuda.is_available():
+                self._device = "cuda"
+            elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+                self._device = "mps"
+            else:
+                self._device = "cpu"
+                torch.set_num_threads(1)  # Single thread for maximum isolation
+
+            _cb(f"Loading with subprocess isolation on {self._device.upper()}...")
+
+            from transformers import AutoTokenizer, AutoModelForSequenceClassification
+
+            # Use slow tokenizer to avoid Rust subprocess issues
+            self._tokenizer = AutoTokenizer.from_pretrained(
+                _MODEL_NAME,
+                use_fast=False,  # Use slow tokenizer
+            )
+
+            self._model = AutoModelForSequenceClassification.from_pretrained(
+                _MODEL_NAME,
+                low_cpu_mem_usage=True,
+            )
+            self._model.eval()
+            self._model = self._model.to(self._device)
+
+            _cb(f"FinBERT ready on {self._device.upper()} ✓")
+            self._loaded = True
+            return True
+
+        except Exception as exc:
+            msg = f"FinBERT load failed (subprocess isolation): {exc}"
+            logger.error(msg)
+            self._load_error = msg
+            if progress_callback:
+                progress_callback(msg)
+            import traceback
+            logger.debug("Subprocess isolation traceback:\n%s", traceback.format_exc())
+            
+            # Add helpful context
+            import sys as sys_mod
+            python_version = sys_mod.version
+            self._load_error = (
+                f"{msg}\n"
+                f"\n"
+                f"This is a known compatibility issue between Python 3.12+ and the transformers library.\n"
+                f"Your Python version: {python_version}\n"
+                f"\n"
+                f"To resolve this issue:\n"
+                f"  1. Downgrade to Python 3.11 (most reliable solution)\n"
+                f"     - Use pyenv: pyenv install 3.11 && pyenv local 3.11\n"
+                f"  2. Or upgrade to the latest transformers: pip install -U transformers\n"
+                f"     - Note: As of now, you have transformers 5.5.0\n"
+                f"  3. Or run with sentiment disabled: trading-cli --no-sentiment\n"
+                f"\n"
+                f"The app will continue without sentiment analysis."
+            )
             return False
  
     def analyze_with_cache(self, headlines: list[str], conn) -> list[dict]:

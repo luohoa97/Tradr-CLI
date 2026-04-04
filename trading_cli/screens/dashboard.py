@@ -36,17 +36,36 @@ class AccountBar(Static):
         return t
  
  
+class AutoTradeStatus(Static):
+    """Shows auto-trade status and last cycle time."""
+    enabled: reactive[bool] = reactive(False)
+    last_cycle: reactive[str] = reactive("--")
+    last_error: reactive[str] = reactive("")
+
+    def render(self) -> Text:
+        status = "[AUTO] ON" if self.enabled else "[AUTO] OFF"
+        style = "bold green" if self.enabled else "bold yellow"
+        t = Text(status, style=style)
+        t.append(f"  Last: {self.last_cycle}", style="dim")
+        if self.last_error:
+            t.append(f"  Error: {self.last_error}", style="bold red")
+        return t
+
+
 class DashboardScreen(Screen):
     """Screen ID 1 — main dashboard."""
- 
+
     BINDINGS = [
         Binding("r", "refresh", "Refresh", show=False),
+        Binding("t", "toggle_autotrade", "Toggle Auto", show=True),
     ]
- 
+
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         with Vertical():
             yield AccountBar(id="account-bar")
+            yield Rule()
+            yield AutoTradeStatus(id="autotrade-status")
             yield Rule()
             with Horizontal(id="main-split"):
                 with Vertical(id="left-pane"):
@@ -77,6 +96,10 @@ class DashboardScreen(Screen):
 
             positions = app.adapter.get_positions()
             self.query_one("#positions-table", PositionsTable).refresh_positions(positions)
+            
+            # Initialize auto-trade status
+            auto_enabled = app.config.get("auto_trading", False)
+            self.update_autotrade_status(auto_enabled)
         except Exception:
             pass
  
@@ -102,3 +125,36 @@ class DashboardScreen(Screen):
             self.query_one("#signal-log", SignalLog).log_signal(signal)
         except Exception:
             pass
+
+    def update_autotrade_status(self, enabled: bool, last_cycle: str = "", error: str = "") -> None:
+        """Update the auto-trade status indicator."""
+        try:
+            status = self.query_one("#autotrade-status", AutoTradeStatus)
+            status.enabled = enabled
+            if last_cycle:
+                status.last_cycle = last_cycle
+            if error:
+                status.last_error = error
+        except Exception:
+            pass
+
+    def action_toggle_autotrade(self) -> None:
+        """Toggle auto-trading on/off from dashboard."""
+        app = self.app
+        if not hasattr(app, "config"):
+            return
+        
+        current = app.config.get("auto_trading", False)
+        new_value = not current
+        app.config["auto_trading"] = new_value
+        
+        # Persist to disk
+        from trading_cli.config import save_config
+        save_config(app.config)
+        
+        # Update status indicator
+        self.update_autotrade_status(new_value)
+        
+        # Notify user
+        status = "enabled" if new_value else "disabled"
+        app.notify(f"Auto-trading {status}", severity="information" if new_value else "warning")

@@ -48,9 +48,16 @@ def calculate_bollinger_bands(
 
 def calculate_atr(ohlcv: pd.DataFrame, period: int = 14) -> pd.Series:
     """Average True Range — measures volatility."""
-    high = ohlcv["High"] if "High" in ohlcv.columns else ohlcv.get("high", pd.Series())
-    low = ohlcv["Low"] if "Low" in ohlcv.columns else ohlcv.get("low", pd.Series())
-    close = ohlcv["Close"] if "Close" in ohlcv.columns else ohlcv.get("close", pd.Series())
+    high_col = "High" if "High" in ohlcv.columns else "high"
+    low_col = "Low" if "Low" in ohlcv.columns else "low"
+    close_col = "Close" if "Close" in ohlcv.columns else "close"
+    
+    if high_col not in ohlcv.columns or low_col not in ohlcv.columns or close_col not in ohlcv.columns:
+        return pd.Series(dtype=float)
+    
+    high = ohlcv[high_col]
+    low = ohlcv[low_col]
+    close = ohlcv[close_col]
 
     if high.empty or low.empty or close.empty:
         return pd.Series(dtype=float)
@@ -75,7 +82,10 @@ def sma_crossover_score(ohlcv: pd.DataFrame, short: int = 20, long_: int = 50) -
     SMA crossover: +1.0 (bullish) if short > long, -1.0 if short < long.
     Returns 0.0 when insufficient data.
     """
-    closes = ohlcv["Close"] if "Close" in ohlcv.columns else ohlcv.get("close", pd.Series())
+    close_col = "Close" if "Close" in ohlcv.columns else "close"
+    if close_col not in ohlcv.columns:
+        return 0.0
+    closes = ohlcv[close_col]
     if closes.empty or len(closes) < max(short, long_):
         return 0.0
     sma_s = calculate_sma(closes, short).iloc[-1]
@@ -91,7 +101,10 @@ def rsi_score(ohlcv: pd.DataFrame, period: int = 14) -> float:
     """
     RSI oversold (<30) → +1.0, overbought (>70) → -1.0, else linear interpolation.
     """
-    closes = ohlcv["Close"] if "Close" in ohlcv.columns else ohlcv.get("close", pd.Series())
+    close_col = "Close" if "Close" in ohlcv.columns else "close"
+    if close_col not in ohlcv.columns:
+        return 0.0
+    closes = ohlcv[close_col]
     if closes.empty or len(closes) < period:
         return 0.0
     rsi = calculate_rsi(closes, period).iloc[-1]
@@ -108,7 +121,10 @@ def bollinger_score(ohlcv: pd.DataFrame, window: int = 20, num_std: float = 2.0)
     Bollinger Bands: price near lower band → +1.0 (oversold), near upper → -1.0.
     Returns 0.0 when insufficient data.
     """
-    closes = ohlcv["Close"] if "Close" in ohlcv.columns else ohlcv.get("close", pd.Series())
+    close_col = "Close" if "Close" in ohlcv.columns else "close"
+    if close_col not in ohlcv.columns:
+        return 0.0
+    closes = ohlcv[close_col]
     if closes.empty or len(closes) < window:
         return 0.0
     upper, middle, lower = calculate_bollinger_bands(closes, window, num_std)
@@ -129,7 +145,10 @@ def ema_score(ohlcv: pd.DataFrame, fast: int = 12, slow: int = 26) -> float:
     EMA crossover: fast > slow → +1.0 (bullish), fast < slow → -1.0.
     Returns 0.0 when insufficient data.
     """
-    closes = ohlcv["Close"] if "Close" in ohlcv.columns else ohlcv.get("close", pd.Series())
+    close_col = "Close" if "Close" in ohlcv.columns else "close"
+    if close_col not in ohlcv.columns:
+        return 0.0
+    closes = ohlcv[close_col]
     if closes.empty or len(closes) < slow:
         return 0.0
     ema_fast = calculate_ema(closes, fast).iloc[-1]
@@ -145,7 +164,10 @@ def volume_score(ohlcv: pd.DataFrame, window: int = 20) -> float:
     Volume spike detection: volume > 1.5x SMA → confirmation boost.
     Returns score based on how much volume exceeds average.
     """
-    vol_col = "Volume" if "Volume" in ohlcv.columns else ohlcv.get("volume", pd.Series())
+    vol_col_name = "Volume" if "Volume" in ohlcv.columns else "volume"
+    if vol_col_name not in ohlcv.columns:
+        return 0.0
+    vol_col = ohlcv[vol_col_name]
     if vol_col.empty or len(vol_col) < window:
         return 0.0
     vol_sma = calculate_volume_sma(vol_col, window)
@@ -261,10 +283,8 @@ def generate_signal(
     if abs(sma_s) > 0.1:
         parts.append(f"SMA{'↑' if sma_s > 0 else '↓'}")
     if abs(rsi_s) > 0.1:
-        rsi_val = calculate_rsi(
-            ohlcv["Close"] if "Close" in ohlcv.columns else ohlcv.get("close", pd.Series()),
-            rsi_period,
-        ).iloc[-1] if not ohlcv.empty else 50
+        close_col = "Close" if "Close" in ohlcv.columns else "close"
+        rsi_val = calculate_rsi(ohlcv[close_col], rsi_period).iloc[-1] if not ohlcv.empty else 50
         parts.append(f"RSI={rsi_val:.0f}")
     if abs(bb_s) > 0.1:
         parts.append(f"BB{'↓' if bb_s > 0 else '↑'}")  # bb_s>0 means price near lower band

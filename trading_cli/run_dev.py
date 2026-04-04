@@ -2,8 +2,18 @@
 
 from __future__ import annotations
 
-import subprocess
+import os
 import sys
+
+# CRITICAL: Set multiprocessing start method BEFORE any other imports
+if sys.platform.startswith('linux'):
+    try:
+        import multiprocessing
+        multiprocessing.set_start_method('spawn', force=True)
+    except (RuntimeError, AttributeError):
+        pass
+
+import subprocess
 from pathlib import Path
 
 from watchfiles import watch

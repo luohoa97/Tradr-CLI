@@ -72,6 +72,7 @@ class BacktestEngine:
         news_fetcher=None,
         use_sentiment: bool = True,
         strategy=None,
+        progress_callback=None,
     ):
         """
         Args:
@@ -83,12 +84,14 @@ class BacktestEngine:
                           whether finbert/news_fetcher are provided.
             strategy: StrategyAdapter instance. If None, falls back to legacy
                       hardcoded technical + sentiment pipeline.
+            progress_callback: Optional callable(str) to report progress.
         """
         self.config = config
         self.finbert = finbert
         self.news_fetcher = news_fetcher
         self.use_sentiment = use_sentiment
         self.strategy = strategy
+        self.progress_callback = progress_callback
 
     def run(
         self,
@@ -159,30 +162,52 @@ class BacktestEngine:
             "volume": self.config.get("weight_volume", 0.15),
         }
 
-        # Walk forward through data
+        # ── Pre-fetch and cache all sentiment scores ──────────────────────
+        sent_scores = {}
+        if self.use_sentiment and self.finbert and self.news_fetcher:
+            total_days = len(df) - lookback
+            try:
+                # Fetch all news once (batch)
+                if self.progress_callback:
+                    self.progress_callback("Fetching historical news…")
+                all_news = self.news_fetcher(symbol, days_ago=len(df))
+                if all_news:
+                    headlines = [item[0] for item in all_news]
+                    timestamps = [item[1] for item in all_news]
+                    classifications = classify_headlines(headlines)
+                    # Analyze all headlines at once
+                    if self.progress_callback:
+                        self.progress_callback("Analyzing sentiment (batch)…")
+                    results = self.finbert.analyze_batch(headlines)
+                    # Single aggregated score for the whole period
+                    cached_score = aggregate_scores_weighted(
+                        results, classifications, timestamps=timestamps
+                    )
+                    # Apply same score to all bars (since we fetched once)
+                    for i in range(lookback, len(df)):
+                        sent_scores[i] = cached_score
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).warning("Sentiment pre-fetch failed: %s", exc)
+                sent_scores = {}
+
+        # ── Walk forward through data ─────────────────────────────────────
         lookback = max(sma_long, ema_slow, bb_window, vol_window) + 30
-        for i in range(lookback, len(df)):
+        total_bars = len(df) - lookback
+        if self.progress_callback:
+            self.progress_callback("Running simulation…")
+        for idx, i in enumerate(range(lookback, len(df))):
+            if self.progress_callback and idx % 20 == 0:
+                pct = int(idx / total_bars * 100) if total_bars else 0
+                self.progress_callback(f"Running simulation… {pct}%")
+
             historical_ohlcv = df.iloc[:i]
             current_bar = df.iloc[i]
             current_price = float(current_bar.get("Close", current_bar.get("close", 0)))
             current_date = str(current_bar.get("Date", df.index[i]))
 
-            # Sentiment score — fetches historical news for the current walk-forward date
-            sent_score = 0.0
-            if self.use_sentiment and self.finbert and self.news_fetcher:
-                try:
-                    news_items = self.news_fetcher(symbol, days_ago=(len(df) - i))
-                    if news_items:
-                        headlines = [item[0] for item in news_items]
-                        timestamps = [item[1] for item in news_items]
-                        classifications = classify_headlines(headlines)
-                        # Use cached sentiment if available (via FinBERT's analyze_with_cache)
-                        results = self.finbert.analyze_batch(headlines)
-                        sent_score = aggregate_scores_weighted(
-                            results, classifications, timestamps=timestamps
-                        )
-                except Exception:
-                    pass
+            # Use pre-cached sentiment score
+            sent_score = sent_scores.get(i, 0.0)
 
             # Max drawdown check
             if check_max_drawdown(equity_values, max_dd):

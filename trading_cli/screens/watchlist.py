@@ -1,5 +1,5 @@
 """Watchlist screen — add/remove symbols, live prices and signals."""
- 
+
 from __future__ import annotations
 
 from textual.app import ComposeResult
@@ -11,28 +11,38 @@ from textual.reactive import reactive
 from rich.text import Text
 
 from trading_cli.widgets.ordered_footer import OrderedFooter
- 
- 
+
+
 class WatchlistScreen(Screen):
     """Screen ID 2 — symbol watchlist with live prices and signals."""
- 
+
     BINDINGS = [
-        Binding("a", "focus_add", "Add symbol", show=False),
-        Binding("d", "delete_selected", "Remove", show=False),
-        Binding("r", "refresh", "Refresh", show=False),
+        Binding("a", "focus_add", "Add", show=True),
+        Binding("d", "delete_selected", "Delete", show=True),
+        Binding("r", "refresh", "Refresh", show=True),
     ]
- 
+
     _prices: dict[str, float] = {}
     _sentiments: dict[str, float] = {}
     _signals: dict[str, str] = {}
- 
+
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         with Vertical():
-            with Horizontal(id="wl-input-row"):
-                yield Label("Add symbol: ", id="wl-add-label")
-                yield Input(placeholder="e.g. AAPL", id="wl-input")
-            yield Label("[dim]Press [a] add · [d] delete · [r] refresh[/dim]", id="wl-help")
+            # Primary search input (like sentiment screen)
+            app = self.app
+            if hasattr(app, 'asset_search') and app.asset_search.is_ready:
+                from trading_cli.widgets.asset_autocomplete import create_asset_autocomplete
+                input_widget, autocomplete_widget = create_asset_autocomplete(
+                    app.asset_search,
+                    placeholder="Search by symbol or company name… (Tab to complete)",
+                    id="wl-input",
+                )
+                yield input_widget
+                yield autocomplete_widget
+            else:
+                yield Input(placeholder="Search by symbol or company name…", id="wl-input")
+            
             yield DataTable(id="wl-table", cursor_type="row")
         yield OrderedFooter()
  
@@ -90,7 +100,17 @@ class WatchlistScreen(Screen):
         self._populate_table()
  
     def on_input_submitted(self, event: Input.Submitted) -> None:
-        symbol = event.value.strip().upper()
+        value = event.value.strip()
+        if not value:
+            return
+        
+        # Extract symbol from autocomplete format "SYMBOL — Company Name"
+        # If it contains " — ", take the first part as the symbol
+        if " — " in value:
+            symbol = value.split(" — ")[0].strip().upper()
+        else:
+            symbol = value.upper()
+        
         if symbol:
             app = self.app
             if hasattr(app, "add_to_watchlist"):
