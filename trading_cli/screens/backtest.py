@@ -1,7 +1,5 @@
 """Backtest results screen — displays performance metrics and trade log."""
 
-from __future__ import annotations
-
 from typing import TYPE_CHECKING
 
 from textual.app import ComposeResult
@@ -92,9 +90,6 @@ class BacktestScreen(Screen):
     _last_symbol: str = ""
     _last_result: "BacktestResult | None" = None
     _all_results: list["BacktestResult"] = []
-    _pending_symbols: list[str] = []
-    _start_date: str | None = None
-    _end_date: str | None = None
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -173,9 +168,6 @@ class BacktestScreen(Screen):
 
         # Reset accumulated results
         self._all_results = []
-        self._pending_symbols = list(symbols)
-        self._start_date = start_date
-        self._end_date = end_date
 
         label = f"{start_date or 'start'} → {end_date or 'now'}"
         self.app.notify(f"Backtesting {len(symbols)} symbols ({label})", timeout=2)
@@ -196,85 +188,54 @@ class BacktestScreen(Screen):
         summary._result = None
         summary.refresh()
 
-        # Kick off first symbol
-        self._next_backtest()
-
-    def _next_backtest(self) -> None:
-        """Run the next pending symbol, or display final results."""
-        if not self._pending_symbols:
-            self._display_all_results()
-            return
-
-        symbol = self._pending_symbols.pop(0)
-        self._update_progress(f"[dim]Backtesting {symbol}… ({len(self._pending_symbols)} remaining)[/dim]")
-        self._execute_backtest(symbol, self._start_date, self._end_date)
+        # Run all symbols in a single worker thread
+        self._execute_backtest(symbols, start_date, end_date)
 
     @work(thread=True, name="backtest-worker", exclusive=True)
-    def _execute_backtest(self, symbol: str, start_date: str | None = None, end_date: str | None = None) -> None:
-        """Run backtest in background thread (non-blocking)."""
+    def _execute_backtest(self, symbols: list[str], start_date: str | None = None, end_date: str | None = None) -> None:
+        """Run backtest for multiple symbols in a single worker thread."""
         try:
             app = self.app
-            from trading_cli.data.news import fetch_headlines_with_timestamps
+            from trading_cli.data.market import fetch_ohlcv_yfinance
             from trading_cli.backtest.engine import BacktestEngine
 
-            # Use adapter for historical data
-            adapter = getattr(app, "adapter", None)
-            self.app.call_from_thread(self._update_progress, "[dim]Fetching OHLCV data…[/dim]")
-            if adapter and not adapter.is_demo_mode:
-                ohlcv = adapter.fetch_ohlcv(symbol, days=365)
-            else:
-                # Fallback to yfinance for demo mode
-                from trading_cli.data.market import fetch_ohlcv_yfinance
-                ohlcv = fetch_ohlcv_yfinance(symbol, days=365)
-
-            if ohlcv.empty:
-                self.app.call_from_thread(self.app.notify, f"No data for {symbol}", severity="warning")
-                self.app.call_from_thread(self._hide_loading)
-                return
-
-            # Build news_fetcher closure using adapter
-            cfg = app.config
-
-            def news_fetcher(sym: str, days_ago: int = 0) -> list[tuple[str, float]]:
-                if adapter and hasattr(adapter, 'fetch_news'):
-                    headlines = adapter.fetch_news(sym, max_articles=30, days_ago=days_ago)
-                    if headlines:
-                        return headlines
-                # Fallback to Alpaca News via data module
-                return fetch_headlines_with_timestamps(
-                    sym,
-                    days_ago=days_ago,
-                    alpaca_key=cfg.get("alpaca_api_key", ""),
-                    alpaca_secret=cfg.get("alpaca_api_secret", ""),
-                    max_articles=30,
+            for i, symbol in enumerate(symbols):
+                self.app.call_from_thread(
+                    self._update_progress,
+                    f"[dim]Backtesting {symbol} ({i+1}/{len(symbols)})…[/dim]",
                 )
 
-            finbert = getattr(app, "finbert", None)
-            has_adapter_news = adapter and hasattr(adapter, 'fetch_news')
-            has_api_keys = bool(cfg.get("alpaca_api_key") and cfg.get("alpaca_api_secret"))
-            use_sentiment = bool((has_adapter_news or has_api_keys) and finbert and finbert.is_loaded)
+                # Use adapter for historical data
+                adapter = getattr(app, "adapter", None)
+                if adapter and not adapter.is_demo_mode:
+                    ohlcv = adapter.fetch_ohlcv(symbol, days=365)
+                else:
+                    ohlcv = fetch_ohlcv_yfinance(symbol, days=365)
 
-            # Use the app's strategy adapter if available
-            strategy = getattr(app, "strategy", None)
-            strategy_name = strategy.info().name if strategy else "default"
-            self.app.call_from_thread(self.app.notify, f"Strategy: {strategy_name}", timeout=2)
+                if ohlcv.empty:
+                    continue
 
-            if use_sentiment:
-                self.app.call_from_thread(self._update_progress, "[dim]Analyzing sentiment…[/dim]")
-            else:
-                self.app.call_from_thread(self._update_progress, "[dim]Running technical backtest…[/dim]")
+                cfg = app.config
+                finbert = getattr(app, "finbert", None)
+                has_adapter_news = adapter and hasattr(adapter, 'fetch_news')
+                has_api_keys = bool(cfg.get("alpaca_api_key") and cfg.get("alpaca_api_secret"))
+                use_sentiment = bool((has_adapter_news or has_api_keys) and finbert and finbert.is_loaded)
 
-            engine = BacktestEngine(
-                config=cfg,
-                finbert=finbert if finbert and finbert.is_loaded else None,
-                news_fetcher=news_fetcher if (has_adapter_news or has_api_keys) else None,
-                use_sentiment=use_sentiment,
-                strategy=strategy,
-                progress_callback=lambda msg: self.app.call_from_thread(self._update_progress, msg),
-                debug=True,
-            )
-            result = engine.run(symbol, ohlcv, start_date=start_date, end_date=end_date, initial_capital=100_000.0)
-            self.app.call_from_thread(self._display_result, result)
+                strategy = getattr(app, "strategy", None)
+
+                engine = BacktestEngine(
+                    config=cfg,
+                    finbert=finbert if finbert and finbert.is_loaded else None,
+                    news_fetcher=None,
+                    use_sentiment=False,
+                    strategy=strategy,
+                    progress_callback=None,
+                    debug=False,
+                )
+                result = engine.run(symbol, ohlcv, start_date=start_date, end_date=end_date, initial_capital=100_000.0)
+                self._all_results.append(result)
+
+            self.app.call_from_thread(self._display_all_results)
         except Exception as exc:
             self.app.call_from_thread(
                 self.app.notify,
@@ -292,12 +253,6 @@ class BacktestScreen(Screen):
             loader.display = False
         except Exception:
             pass
-
-    def _display_result(self, result: "BacktestResult") -> None:
-        """Store result, then chain to next symbol or show combined view."""
-        self._all_results.append(result)
-        # Chain to next symbol
-        self.app.call_from_thread(self._next_backtest)
 
     def _display_all_results(self) -> None:
         """Display combined backtest results for all symbols."""
