@@ -12,6 +12,8 @@ from trading_cli.strategy.adapters.registry import (
 from trading_cli.strategy.adapters.hybrid import HybridStrategy
 from trading_cli.strategy.adapters.momentum import MomentumStrategy
 from trading_cli.strategy.adapters.mean_reversion import MeanReversionStrategy
+from trading_cli.strategy.adapters.mean_reversion_rsi2 import MeanReversionRSI2Strategy
+from trading_cli.strategy.adapters.trend_following import TrendFollowingStrategy
 from trading_cli.strategy.adapters.sentiment_driven import SentimentStrategy
 
 __all__ = [
@@ -25,5 +27,7 @@ __all__ = [
     "HybridStrategy",
     "MomentumStrategy",
     "MeanReversionStrategy",
+    "MeanReversionRSI2Strategy",
+    "TrendFollowingStrategy",
     "SentimentStrategy",
 ]

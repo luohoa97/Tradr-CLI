@@ -183,26 +183,36 @@ class BacktestScreen(Screen):
             self._run_backtest(symbol)
 
     def action_run_backtest(self) -> None:
-        # Try to get symbol from input first
+        # If a specific symbol was typed, run just that one
         try:
             inp = self.query_one("#backtest-symbol-input", Input)
             value = inp.value.strip()
             if value:
-                # Extract symbol from autocomplete format
                 if " — " in value:
                     symbol = value.split(" — ")[0].strip().upper()
                 else:
                     symbol = value.upper()
                 self._last_symbol = symbol
-            elif not self._last_symbol:
-                self.app.notify("Enter a symbol first", severity="warning")
+                self._run_backtest(symbol)
                 return
         except Exception:
-            if not self._last_symbol:
-                self.app.notify("Enter a symbol first", severity="warning")
-                return
+            pass
 
-        self._run_backtest(self._last_symbol)
+        # Default: run backtest for ALL configured watchlist symbols
+        app = self.app
+        if not hasattr(app, "config"):
+            self.app.notify("App not fully initialized", severity="error")
+            return
+
+        symbols = app.config.get("default_symbols", ["AAPL", "TSLA", "NVDA"])
+        if not symbols:
+            self.app.notify("No symbols configured", severity="warning")
+            return
+
+        self.app.notify(f"Backtesting {len(symbols)} symbols: {', '.join(symbols)}", timeout=2)
+        for symbol in symbols:
+            self._last_symbol = symbol
+            self._run_backtest(symbol)
 
     def _run_backtest(self, symbol: str) -> None:
         """Kick off backtest in a background worker thread."""
