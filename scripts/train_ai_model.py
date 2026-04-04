@@ -46,9 +46,13 @@ def get_max_batch_size(model, input_dim, seq_len, device, start_batch=128):
     if device.type == 'cpu':
         return 64
         
-    logger.info("🔍 Searching for optimal batch size for your GPU...")
+    print("🔍 Searching for optimal batch size for your GPU...")
     batch_size = start_batch
     last_success = batch_size
+    
+    # Progress bar for the search
+    pbar = tqdm(total=16384, desc="Hardware Probe", unit="batch")
+    pbar.update(batch_size)
     
     try:
         while batch_size <= 16384: # Ceiling
@@ -64,15 +68,18 @@ def get_max_batch_size(model, input_dim, seq_len, device, start_batch=128):
             
             last_success = batch_size
             batch_size *= 2
+            pbar.update(batch_size - last_success)
             torch.cuda.empty_cache()
             
     except RuntimeError as e:
+        pbar.close()
         if "out of memory" in str(e).lower():
-            logger.info(f"💡 GPU Hit limit at {batch_size}. Using {last_success} as optimal batch.")
+            print(f"💡 GPU Hit limit at {batch_size}. Using {last_success} as optimal batch.")
             torch.cuda.empty_cache()
         else:
             raise e
             
+    pbar.close()
     return last_success
 
 def train():
@@ -105,7 +112,7 @@ def train():
             logger.info("🚀 Starting on-the-fly dataset generation (10 years, 70 symbols)...")
             build_dataset()
 
-    logger.info("🚀 Loading dataset from data/trading_dataset.pt...")
+    print("🚀 Loading dataset from data/trading_dataset.pt...")
     data = torch.load("data/trading_dataset.pt")
     X, y = data["X"], data["y"]
     
@@ -135,7 +142,7 @@ def train():
     logger.info("Starting training on %d samples (%d features)...", len(X), input_dim)
     
     # 5. Start Training
-    logger.info("🚀 Starting training loop...")
+    print(f"🚀 Starting training loop (Batch Size: {batch_size})...")
     best_val_loss = float('inf')
     
     for epoch in range(EPOCHS):
