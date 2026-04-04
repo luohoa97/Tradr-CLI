@@ -28,6 +28,7 @@ DEFAULT_CONFIG: dict = {
     "poll_interval_positions": 60,
     "initial_cash": 100000.0,
     "finbert_batch_size": 50,
+    "debug_fast_cycle": True,
     "sma_short": 20,
     "sma_long": 50,
     "rsi_period": 14,

@@ -159,6 +159,14 @@ class ConfigScreen(Screen):
                 yield ConfigRow("Technical weight", "tech_weight", str(cfg.get("tech_weight", 0.6)))
                 yield ConfigRow("Sentiment weight", "sent_weight", str(cfg.get("sent_weight", 0.4)))
 
+            with Collapsible(title="🐛 Debug", id="collapsible-debug"):
+                with Horizontal():
+                    yield Label("Fast cycle (10s polling):")
+                    yield Switch(
+                        value=cfg.get("debug_fast_cycle", False),
+                        id="switch-debug-fast",
+                    )
+
             with Collapsible(title="📈 Technical Indicator Weights", id="collapsible-tech-weights"):
                 yield ConfigRow("SMA weight", "weight_sma", str(cfg.get("weight_sma", 0.25)))
                 yield ConfigRow("RSI weight", "weight_rsi", str(cfg.get("weight_rsi", 0.25)))
@@ -281,6 +289,12 @@ class ConfigScreen(Screen):
         try:
             sw = self.query_one("#switch-auto-trading", Switch)
             cfg["auto_trading"] = sw.value
+        except Exception:
+            pass
+
+        try:
+            sw = self.query_one("#switch-debug-fast", Switch)
+            cfg["debug_fast_cycle"] = sw.value
         except Exception:
             pass
 

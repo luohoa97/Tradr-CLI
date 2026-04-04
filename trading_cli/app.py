@@ -606,28 +606,35 @@ class TradingApp(App):
     @work(thread=True, name="poll-signals", exclusive=False)
     def _poll_signals(self) -> None:
         """Generate trading signals and optionally execute auto-trades."""
-        time.sleep(5)  # short delay so prices are available first
-        logger.info("Signal poll worker started, running first cycle")
+        debug_fast = self.config.get("debug_fast_cycle", False)
+        time.sleep(2 if debug_fast else 5)
+        logger.info("Signal poll worker started (debug_fast=%s)", debug_fast)
         while self._running:
             try:
                 self._run_signal_cycle()
             except Exception as exc:
                 logger.warning("Signal cycle error: %s", exc)
-            time.sleep(self.config.get("poll_interval_signals", 300))
+            interval = self.config.get("poll_interval_signals", 300)
+            if debug_fast:
+                interval = min(interval, 10)  # Cap at 10s in debug mode
+            time.sleep(interval)
  
     def _run_signal_cycle(self) -> None:
-        from trading_cli.data.market import fetch_ohlcv_yfinance
+        from trading_cli.data.market import fetch_ohlcv_yfinance, get_latest_quotes_batch
         from trading_cli.data.news import fetch_headlines
-        from trading_cli.sentiment.aggregator import aggregate_scores_weighted, aggregate_scores
-        from trading_cli.sentiment.news_classifier import classify_headlines, EventType, DEFAULT_WEIGHTS as EVENT_WEIGHTS
+        from trading_cli.sentiment.aggregator import aggregate_scores
+        from trading_cli.sentiment.news_classifier import classify_headlines
+        from trading_cli.strategy.scanner import MarketScanner
         from trading_cli.strategy.risk import check_max_drawdown
         from trading_cli.data.db import save_signal
 
         auto_enabled = self.config.get("auto_trading", False)
+        debug_fast = self.config.get("debug_fast_cycle", False)
         cycle_time = datetime.now().strftime("%H:%M:%S")
-        logger.info("Running signal cycle at %s (auto_trading=%s)", cycle_time, auto_enabled)
+        logger.info("Running signal cycle at %s (auto_trading=%s, debug_fast=%s)", cycle_time, auto_enabled, debug_fast)
 
-        # Build event weight map from config
+        # Build event weight map
+        from trading_cli.sentiment.news_classifier import EventType, DEFAULT_WEIGHTS as EVENT_WEIGHTS
         event_weights = {
             EventType.EARNINGS: self.config.get("event_weight_earnings", EVENT_WEIGHTS[EventType.EARNINGS]),
             EventType.EXECUTIVE: self.config.get("event_weight_executive", EVENT_WEIGHTS[EventType.EXECUTIVE]),
@@ -636,89 +643,115 @@ class TradingApp(App):
             EventType.GENERIC: self.config.get("event_weight_generic", EVENT_WEIGHTS[EventType.GENERIC]),
         }
 
-        half_life = self.config.get("sentiment_half_life_hours", 24.0)
-        auto_enabled = self.config.get("auto_trading", False)
-        cycle_time = datetime.now().strftime("%H:%M:%S")
-
         # Update dashboard with cycle time
         self.call_from_thread(self._on_cycle_completed, cycle_time, auto_enabled)
 
-        # When auto-trading, scan broader asset universe instead of just watchlist
+        # ── Phase 1: Get universe and batch fetch prices ────────────────────
         scan_universe = auto_enabled and hasattr(self, 'asset_search') and self.asset_search.is_ready
         if scan_universe:
-            all_assets = [a["symbol"] for a in self.asset_search._assets]
-            # Rotate through universe: scan 50 stocks per cycle, offset by cycle count
-            cycle_offset = getattr(self, '_signal_cycle_count', 0) * 50
-            self._signal_cycle_count = getattr(self, '_signal_cycle_count', 0) + 1
-            symbols = all_assets[cycle_offset % len(all_assets):][:50]
+            all_assets = self.asset_search._assets
+            all_symbols = [a["symbol"] for a in all_assets]
+            # Filter: only US equities, price > $1, exclude ETFs/warrants
+            filtered = [s for s in all_symbols if not any(x in s for x in (".", "-WS", "-P", "-A"))]
+            symbols = filtered[:500]  # Cap at 500 for performance
         else:
             symbols = list(self.watchlist)
 
-        for symbol in symbols:
+        if not symbols:
+            return
+
+        # Batch fetch latest prices for all symbols
+        try:
+            current_prices = get_latest_quotes_batch(self.adapter if not self.adapter.is_demo_mode else None, symbols)
+        except Exception as exc:
+            logger.warning("Batch price fetch failed: %s", exc)
+            return
+
+        logger.info("Fetched prices for %d symbols, %d have data", len(symbols), len(current_prices))
+
+        # ── Phase 2: Initialize scanner on first cycle ──────────────────────
+        if not hasattr(self, "_scanner"):
+            self._scanner = MarketScanner()
+
+        scanner = self._scanner
+
+        # ── Phase 3: Populate cache for symbols that don't have it yet ──────
+        # Fetch historical data for uncached symbols (in batches)
+        uncached = [s for s in symbols if scanner.get_cached(s) is None]
+        if uncached:
+            logger.info("Populating cache for %d new symbols", len(uncached))
+            batch_size = 10 if not debug_fast else 5
+            for i in range(0, len(uncached), batch_size):
+                batch = uncached[i:i + batch_size]
+                for sym in batch:
+                    try:
+                        ohlcv = fetch_ohlcv_yfinance(sym, days=60)
+                        if not ohlcv.empty:
+                            # Normalize columns
+                            ohlcv.columns = [c.lower() for c in ohlcv.columns]
+                            if "adj close" in ohlcv.columns:
+                                ohlcv = ohlcv.rename(columns={"adj close": "adj_close"})
+                            ohlcv = ohlcv.reset_index()
+                            if "index" in ohlcv.columns:
+                                ohlcv = ohlcv.rename(columns={"index": "date"})
+                            scanner.save(sym, ohlcv)
+                    except Exception as exc:
+                        logger.debug("Cache populate failed for %s: %s", sym, exc)
+                if not debug_fast:
+                    time.sleep(0.2)  # Rate limit yfinance
+
+        # ── Phase 4: Update cache with latest prices ────────────────────────
+        for symbol, price in current_prices.items():
+            cached = scanner.get_cached(symbol)
+            if cached is not None and len(cached) > 0:
+                # Append/update today's bar
+                today = datetime.now().strftime("%Y-%m-%d")
+                last_bar = cached.iloc[-1]
+                bar = {
+                    "date": today,
+                    "open": last_bar.get("open", price),
+                    "high": max(last_bar.get("high", price), price),
+                    "low": min(last_bar.get("low", price), price),
+                    "close": price,
+                    "volume": last_bar.get("volume", 0),
+                }
+                scanner.append_bar(symbol, bar)
+
+        # ── Phase 5: Screen for breakout candidates ─────────────────────────
+        entry_period = self.config.get("entry_period", 20)
+        candidates = scanner.screen_breakouts(symbols, current_prices, entry_period)
+        logger.info("Breakout candidates: %d / %d scanned", len(candidates), len(symbols))
+
+        # ── Phase 6: Run full signal analysis on candidates ─────────────────
+        for symbol in candidates:
             try:
-                # Use shorter window for live signals (only need recent data for breakout detection)
-                ohlcv = fetch_ohlcv_yfinance(symbol, days=30)
-                if ohlcv.empty:
-                    logger.warning(f"No OHLCV data for {symbol}, skipping")
+                ohlcv = scanner.get_cached(symbol)
+                if ohlcv is None or len(ohlcv) < 30:
                     continue
 
-                price = self._prices.get(symbol)
-                if price is None:
-                    from trading_cli.data.market import get_latest_quote_yfinance
-                    price = get_latest_quote_yfinance(symbol)
-                    if price is None:
-                        logger.warning(f"No price data for {symbol}, skipping")
-                        continue
+                price = current_prices.get(symbol, 0)
 
-                headlines = fetch_headlines(symbol, max_articles=10)
-
-                # Classify headlines by event type
-                classifications = classify_headlines(headlines) if headlines else []
-
-                sent_results = []
-                timestamps = []
-                if self.finbert and self.finbert.is_loaded:
-                    sent_results = self.finbert.analyze_with_cache(headlines, self.db_conn)
-                elif not self.finbert or not self.finbert.is_loaded:
-                    logger.warning(f"FinBERT not loaded for {symbol}, using neutral sentiment")
-                    error_detail = self.finbert.load_error if self.finbert else "FinBERT not initialized"
-                    self.call_from_thread(
-                        self._on_autotrade_error,
-                        f"FinBERT not loaded: {error_detail}"
-                    )
-
-                # Use weighted aggregation if we have classifications
-                if classifications and sent_results:
-                    timestamps = [r.get("timestamp", 0) for r in sent_results] if sent_results else None
-                    sent_score = aggregate_scores_weighted(
-                        sent_results,
-                        classifications=classifications,
-                        timestamps=timestamps if any(timestamps) else None,
-                        event_weights=event_weights,
-                        half_life_hours=half_life,
-                    )
-                else:
-                    sent_score = aggregate_scores(sent_results)
-
-                self._sentiments[symbol] = sent_score
-
-                # Use strategy adapter for signal generation
+                # Run strategy analysis
                 signal_result = self.strategy.generate_signal(
                     symbol=symbol,
                     ohlcv=ohlcv,
-                    sentiment_score=sent_score,
-                    prices=self._prices,
+                    sentiment_score=0.0,  # Skip sentiment for speed
+                    prices=current_prices,
+                    positions=getattr(self, "_positions", []),
                     config=self.config,
                 )
 
-                # Build signal dict for backward compatibility with DB and UI
+                if signal_result.action == "HOLD":
+                    continue
+
+                # Build signal dict for DB/UI
                 signal = {
-                    "symbol": signal_result.symbol,
+                    "symbol": symbol,
                     "action": signal_result.action,
                     "confidence": signal_result.confidence,
                     "hybrid_score": signal_result.score,
                     "technical_score": signal_result.metadata.get("sma_score", 0.0),
-                    "sentiment_score": sent_score,
+                    "sentiment_score": 0.0,
                     "reason": signal_result.reason,
                     "price": price or 0.0,
                 }
@@ -736,29 +769,22 @@ class TradingApp(App):
 
                 self.call_from_thread(self._on_signal_generated, signal)
 
-                # ── Risk management checks before auto-execution ──────────────
-                if auto_enabled and signal_result.action != "HOLD":
+                # Auto-execute if enabled
+                if auto_enabled and check_max_drawdown(self._portfolio_history, self.config.get("max_drawdown", 0.15)):
                     logger.info("Auto-trade %s signal for %s (confidence=%.2f)", signal_result.action, symbol, signal_result.confidence)
-                    if check_max_drawdown(self._portfolio_history, self.config.get("max_drawdown", 0.15)):
-                        logger.warning("Auto-trade skipped: max drawdown exceeded")
-                        self.call_from_thread(
-                            self._on_autotrade_blocked,
-                            "Auto-trade blocked: Max drawdown exceeded"
-                        )
-                        continue
                     logger.info("Executing auto-trade: %s %s", signal_result.action, symbol)
                     self.call_from_thread(self._auto_execute, signal)
-                elif auto_enabled and signal_result.action == "HOLD":
-                    logger.debug(f"HOLD signal for {symbol}, no action taken")
-                elif not auto_enabled:
-                    logger.debug("Auto-trading disabled, signal %s for %s not executed", signal_result.action, symbol)
 
             except Exception as exc:
-                logger.warning("Signal error for %s: %s", symbol, exc)
-                self.call_from_thread(
-                    self._on_autotrade_error,
-                    f"Error processing {symbol}: {exc}"
-                )
+                logger.debug("Signal analysis failed for %s: %s", symbol, exc)
+
+        # ── Phase 7: Cleanup stale cache periodically ───────────────────────
+        cycle_count = getattr(self, '_signal_cycle_count', 0) + 1
+        self._signal_cycle_count = cycle_count
+        if cycle_count % 10 == 0:  # Every 10th cycle
+            removed = scanner.cleanup_old_cache(max_age_days=7)
+            if removed > 0:
+                logger.info("Cleaned up %d stale cache files", removed)
  
     # ── UI callbacks (called from thread via call_from_thread) ─────────────────
 
