@@ -233,6 +233,15 @@ class BacktestEngine:
             if check_max_drawdown(equity_values, max_dd):
                 break  # Stop backtest if drawdown exceeded
 
+            # Build mock position object for strategy adapter
+            class _MockPosition:
+                def __init__(self, symbol, qty, avg_price):
+                    self.symbol = symbol
+                    self.qty = qty
+                    self.avg_entry_price = avg_price
+
+            backtest_positions = [_MockPosition(symbol, position_qty, position_avg_price)] if position_qty > 0 else []
+
             # Generate signal — use strategy adapter if available, else legacy
             if self.strategy is not None:
                 # Use strategy adapter
@@ -240,6 +249,7 @@ class BacktestEngine:
                     symbol=symbol,
                     ohlcv=historical_ohlcv,
                     sentiment_score=sent_score,
+                    positions=backtest_positions,
                     config=self.config,
                 )
                 action = signal_result.action

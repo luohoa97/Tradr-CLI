@@ -197,48 +197,60 @@ class BacktestScreen(Screen):
 
     @work(thread=True, name="backtest-worker", exclusive=True)
     def _execute_backtest(self, symbols: list[str], start_date: str | None = None, end_date: str | None = None) -> None:
-        """Run backtest for multiple symbols in a single worker thread."""
+        """Run backtest for multiple symbols in parallel worker threads."""
         try:
             app = self.app
             from trading_cli.data.market import fetch_ohlcv_yfinance
             from trading_cli.backtest.engine import BacktestEngine
+            from concurrent.futures import ThreadPoolExecutor, as_completed
 
-            for i, symbol in enumerate(symbols):
-                self.app.call_from_thread(
-                    self._update_progress,
-                    f"[dim]Backtesting {symbol} ({i+1}/{len(symbols)})…[/dim]",
-                )
+            def run_one_symbol(symbol):
+                """Run backtest for a single symbol in its own thread."""
+                try:
+                    adapter = getattr(app, "adapter", None)
+                    if adapter and not adapter.is_demo_mode:
+                        ohlcv = adapter.fetch_ohlcv(symbol, days=365)
+                    else:
+                        ohlcv = fetch_ohlcv_yfinance(symbol, days=365)
 
-                # Use adapter for historical data
-                adapter = getattr(app, "adapter", None)
-                if adapter and not adapter.is_demo_mode:
-                    ohlcv = adapter.fetch_ohlcv(symbol, days=365)
-                else:
-                    ohlcv = fetch_ohlcv_yfinance(symbol, days=365)
+                    if ohlcv.empty:
+                        return None
 
-                if ohlcv.empty:
-                    continue
+                    cfg = app.config
+                    strategy = getattr(app, "strategy", None)
 
-                cfg = app.config
-                finbert = getattr(app, "finbert", None)
-                has_adapter_news = adapter and hasattr(adapter, 'fetch_news')
-                has_api_keys = bool(cfg.get("alpaca_api_key") and cfg.get("alpaca_api_secret"))
-                use_sentiment = bool((has_adapter_news or has_api_keys) and finbert and finbert.is_loaded)
+                    engine = BacktestEngine(
+                        config=cfg,
+                        finbert=None,
+                        news_fetcher=None,
+                        use_sentiment=False,
+                        strategy=strategy,
+                        progress_callback=None,
+                        debug=False,
+                    )
+                    return engine.run(symbol, ohlcv, start_date=start_date, end_date=end_date, initial_capital=100_000.0)
+                except Exception as exc:
+                    import logging
+                    logging.getLogger(__name__).debug("Backtest %s skipped: %s", symbol, exc)
+                    return None
 
-                strategy = getattr(app, "strategy", None)
+            total = len(symbols)
+            results = []
+            max_workers = min(8, total)  # Cap at 8 parallel threads
 
-                engine = BacktestEngine(
-                    config=cfg,
-                    finbert=finbert if finbert and finbert.is_loaded else None,
-                    news_fetcher=None,
-                    use_sentiment=False,
-                    strategy=strategy,
-                    progress_callback=None,
-                    debug=False,
-                )
-                result = engine.run(symbol, ohlcv, start_date=start_date, end_date=end_date, initial_capital=100_000.0)
-                self._all_results.append(result)
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {executor.submit(run_one_symbol, s): s for s in symbols}
+                for i, future in enumerate(as_completed(futures)):
+                    symbol = futures[future]
+                    result = future.result()
+                    if result:
+                        results.append(result)
+                    self.app.call_from_thread(
+                        self._update_progress,
+                        f"[dim]Backtested {i+1}/{total} symbols…[/dim]",
+                    )
 
+            self._all_results = results
             self.app.call_from_thread(self._display_all_results)
         except Exception as exc:
             self.app.call_from_thread(
