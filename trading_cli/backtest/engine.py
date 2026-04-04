@@ -145,6 +145,11 @@ class BacktestEngine:
         if "adj close" in df.columns:
             df = df.rename(columns={"adj close": "adj_close"})
 
+        logger.info("Backtest %s: %d bars, columns: %s", symbol, len(df), list(df.columns))
+
+        if len(df) < 60:
+            logger.warning("Backtest %s: not enough data (%d bars, need 60+)", symbol, len(df))
+
         # Config params
         buy_threshold = self.config.get("signal_buy_threshold", 0.5)
         sell_threshold = self.config.get("signal_sell_threshold", -0.3)
@@ -172,6 +177,7 @@ class BacktestEngine:
 
         # ── Pre-fetch and cache all sentiment scores ──────────────────────
         lookback = max(sma_long, ema_slow, bb_window, vol_window) + 30
+        logger.info("Backtest %s: lookback=%d, total_bars=%d", symbol, lookback, len(df) - lookback)
         sent_scores = {}
         if self.use_sentiment and self.finbert and self.news_fetcher:
             total_days = len(df) - lookback
@@ -256,6 +262,8 @@ class BacktestEngine:
                 else:
                     action = "HOLD"
                 reason = f"hybrid={hybrid:.3f} tech={tech:.3f}"
+                if idx < 3:
+                    logger.info("Bar %d: price=%.2f tech=%.3f hybrid=%.3f action=%s", idx, current_price, tech, hybrid, action)
 
             if action == "BUY" and position_qty == 0:
                 qty = calculate_position_size(
@@ -328,6 +336,7 @@ class BacktestEngine:
 
         final_equity = cash
         total_return = ((final_equity - initial_capital) / initial_capital) * 100
+        logger.info("Backtest %s: %d trades, return=%.2f%%", symbol, len(trades), total_return)
 
         # Compute metrics
         peak = equity_values[0]
