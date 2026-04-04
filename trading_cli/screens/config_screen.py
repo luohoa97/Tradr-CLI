@@ -137,8 +137,8 @@ class ConfigScreen(Screen):
                 yield ConfigRow("Max positions", "max_positions", str(cfg.get("max_positions", 10)))
 
             with Collapsible(title="🎯 Signal Thresholds", id="collapsible-thresholds"):
-                yield ConfigRow("Buy threshold (0–1)", "signal_buy_threshold", str(cfg.get("signal_buy_threshold", 0.5)))
-                yield ConfigRow("Sell threshold (-1–0)", "signal_sell_threshold", str(cfg.get("signal_sell_threshold", -0.3)))
+                yield ConfigRow("Buy threshold (-1–1)", "signal_buy_threshold", str(cfg.get("signal_buy_threshold", 0.15)))
+                yield ConfigRow("Sell threshold (-1–1)", "signal_sell_threshold", str(cfg.get("signal_sell_threshold", -0.15)))
 
             with Collapsible(title="🧠 Strategy", id="collapsible-strategy"):
                 yield ConfigRow(

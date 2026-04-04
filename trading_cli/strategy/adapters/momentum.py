@@ -43,8 +43,8 @@ class MomentumStrategy(StrategyAdapter):
                 "macd_slow": {"type": "int", "default": 26, "desc": "MACD slow EMA"},
                 "macd_signal": {"type": "int", "default": 9, "desc": "MACD signal line"},
                 "momentum_threshold": {"type": "float", "default": 0.3, "desc": "ROC threshold for entry"},
-                "signal_buy_threshold": {"type": "float", "default": 0.4, "desc": "Combined score buy threshold"},
-                "signal_sell_threshold": {"type": "float", "default": -0.3, "desc": "Combined score sell threshold"},
+                "signal_buy_threshold": {"type": "float", "default": 0.15, "desc": "Combined score buy threshold"},
+                "signal_sell_threshold": {"type": "float", "default": -0.15, "desc": "Combined score sell threshold"},
             },
         )
 
@@ -118,8 +118,8 @@ class MomentumStrategy(StrategyAdapter):
         # Combined momentum score (ROC 60% + MACD 40%)
         combined = 0.6 * roc_score + 0.4 * macd_score
 
-        buy_threshold = config.get("signal_buy_threshold", 0.4)
-        sell_threshold = config.get("signal_sell_threshold", -0.3)
+        buy_threshold = config.get("signal_buy_threshold", 0.15)
+        sell_threshold = config.get("signal_sell_threshold", -0.15)
 
         if combined >= buy_threshold and roc_score >= momentum_threshold:
             action = "BUY"

@@ -18,19 +18,6 @@ if TYPE_CHECKING:
     from trading_cli.backtest.engine import BacktestResult
 
 
-class BacktestScreen(Screen):
-    """Screen for viewing backtest results."""
-
-    CSS = """
-    #backtest-progress {
-        height: 1;
-        padding: 0 1;
-        color: $text-muted;
-        text-style: italic;
-    }
-    """
-
-
 class BacktestSummary(Static):
     """Displays key backtest metrics."""
 
@@ -63,6 +50,38 @@ class BacktestSummary(Static):
 class BacktestScreen(Screen):
     """Screen for viewing backtest results."""
 
+    CSS = """
+    #backtest-progress {
+        height: 1;
+        padding: 0 1;
+        color: $text-muted;
+        text-style: italic;
+    }
+
+    #backtest-controls {
+        height: auto;
+        padding: 0 1;
+    }
+
+    #backtest-symbol-input {
+        width: 100%;
+    }
+
+    #btn-backtest-run {
+        width: 100%;
+    }
+
+    #backtest-summary {
+        height: auto;
+        padding: 0 1;
+        color: $text;
+    }
+
+    #backtest-table {
+        width: 100%;
+    }
+    """
+
     BINDINGS = [
         Binding("r", "run_backtest", "Run", show=True),
     ]
@@ -72,13 +91,13 @@ class BacktestScreen(Screen):
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
-        with Vertical():
+        with Vertical(id="backtest-controls"):
             yield Input(placeholder="Search by symbol or company name…", id="backtest-symbol-input")
             yield Button("🚀 Run", id="btn-backtest-run", variant="success")
-            yield BacktestSummary(id="backtest-summary")
-            yield Label("", id="backtest-progress")
-            yield LoadingIndicator(id="backtest-loading")
-            yield DataTable(id="backtest-table", cursor_type="row")
+        yield BacktestSummary(id="backtest-summary")
+        yield Label("", id="backtest-progress")
+        yield LoadingIndicator(id="backtest-loading")
+        yield DataTable(id="backtest-table", cursor_type="row")
         yield OrderedFooter()
 
     def on_mount(self) -> None:

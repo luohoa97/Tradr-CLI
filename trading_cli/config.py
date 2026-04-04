@@ -30,8 +30,8 @@ DEFAULT_CONFIG: dict = {
     "sma_short": 20,
     "sma_long": 50,
     "rsi_period": 14,
-    "signal_buy_threshold": 0.5,
-    "signal_sell_threshold": -0.3,
+    "signal_buy_threshold": 0.15,
+    "signal_sell_threshold": -0.15,
     "position_size_warning": 1000.0,
     # ── Strategy weights ──────────────────────────────────────────────────────
     "tech_weight": 0.6,

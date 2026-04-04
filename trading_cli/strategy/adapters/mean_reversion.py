@@ -43,8 +43,8 @@ class MeanReversionStrategy(StrategyAdapter):
                 "rsi_period": {"type": "int", "default": 14, "desc": "RSI period"},
                 "rsi_oversold": {"type": "int", "default": 30, "desc": "RSI oversold threshold"},
                 "rsi_overbought": {"type": "int", "default": 70, "desc": "RSI overbought threshold"},
-                "signal_buy_threshold": {"type": "float", "default": 0.5, "desc": "Combined score buy threshold"},
-                "signal_sell_threshold": {"type": "float", "default": -0.5, "desc": "Combined score sell threshold"},
+                "signal_buy_threshold": {"type": "float", "default": 0.15, "desc": "Combined score buy threshold"},
+                "signal_sell_threshold": {"type": "float", "default": -0.15, "desc": "Combined score sell threshold"},
             },
         )
 
@@ -119,8 +119,8 @@ class MeanReversionStrategy(StrategyAdapter):
         # Combined: equal-weight BB + RSI
         combined = 0.5 * bb_score + 0.5 * rsi_score
 
-        buy_threshold = config.get("signal_buy_threshold", 0.5)
-        sell_threshold = config.get("signal_sell_threshold", -0.5)
+        buy_threshold = config.get("signal_buy_threshold", 0.15)
+        sell_threshold = config.get("signal_sell_threshold", -0.15)
 
         if combined >= buy_threshold:
             action = "BUY"
