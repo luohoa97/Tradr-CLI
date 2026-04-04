@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 # Hyperparameters
 EPOCHS = 100
-BATCH_SIZE = 64 # Reduced for Transformer memory
+BATCH_SIZE = 128 # Higher for T4 GPU
 LR = 0.0003
 HIDDEN_DIM = 512
 LAYERS = 8
@@ -42,6 +42,11 @@ HF_TOKEN = os.getenv("HF_TOKEN")
 def train():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: {device}")
+    
+    # Use BFloat16 if supported (Ampere+ GPUs like A100/H100), otherwise FP16
+    use_bf16 = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
+    dtype = torch.bfloat16 if use_bf16 else torch.float16
+    scaler = torch.cuda.amp.GradScaler(enabled=(not use_bf16)) # Scaler only needed for FP16
 
     # 1. Load Dataset
     if not os.path.exists("data/trading_dataset.pt"):
@@ -65,8 +70,8 @@ def train():
     val_size = len(dataset) - train_size
     train_ds, val_ds = random_split(dataset, [train_size, val_size])
     
-    train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True)
-    val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE)
+    train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, pin_memory=True)
+    val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE, pin_memory=True)
 
     # 3. Create Model
     input_dim = X.shape[2]
@@ -93,14 +98,22 @@ def train():
         for batch_X, batch_y in train_loader:
             batch_X, batch_y = batch_X.to(device), batch_y.to(device)
             optimizer.zero_grad()
-            outputs = model(batch_X)
-            loss = criterion(outputs, batch_y)
-            loss.backward()
             
-            # Gradient clipping for stability with quantized weights
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            # Using Mixed Precision (AMP)
+            with torch.cuda.amp.autocast(dtype=dtype):
+                outputs = model(batch_X)
+                loss = criterion(outputs, batch_y)
             
-            optimizer.step()
+            if not use_bf16:
+                scaler.scale(loss).backward()
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                optimizer.step()
             
             train_loss += loss.item()
             _, predicted = outputs.max(1)
@@ -115,8 +128,9 @@ def train():
         with torch.no_grad():
             for batch_X, batch_y in val_loader:
                 batch_X, batch_y = batch_X.to(device), batch_y.to(device)
-                outputs = model(batch_X)
-                loss = criterion(outputs, batch_y)
+                with torch.cuda.amp.autocast(dtype=dtype):
+                    outputs = model(batch_X)
+                    loss = criterion(outputs, batch_y)
                 val_loss += loss.item()
                 _, predicted = outputs.max(1)
                 val_total += batch_y.size(0)
