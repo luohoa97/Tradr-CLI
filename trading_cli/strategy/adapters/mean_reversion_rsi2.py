@@ -41,7 +41,7 @@ def calculate_rsi_fast(prices: pd.Series, period: int = 2) -> pd.Series:
 
 
 @register_strategy
-class MeanReversionStrategy(StrategyAdapter):
+class MeanReversionRSI2Strategy(StrategyAdapter):
     """RSI(2) + Bollinger Bands mean reversion.
 
     Buys when price is extremely oversold (RSI(2) < 10 AND below lower BB).
