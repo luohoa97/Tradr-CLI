@@ -28,6 +28,7 @@ import logging
 import signal
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 
 
@@ -36,18 +37,27 @@ def main() -> None:
     config_dir = Path("~/.config/trading-cli").expanduser()
     config_dir.mkdir(parents=True, exist_ok=True)
 
-    log_path = config_dir / "app.log"
+    # Create a new log file per run, keep only the last 10
+    log_path = config_dir / f"app-{datetime.now().strftime('%Y%m%d-%H%M%S')}.log"
     logging.basicConfig(
         level=logging.WARNING,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         handlers=[
             logging.FileHandler(
                 log_path,
-                mode="a",
+                mode="w",
                 encoding="utf-8",
             )
         ],
     )
+
+    # Clean up old log files (keep last 10)
+    try:
+        log_files = sorted(config_dir.glob("app-*.log"))
+        for old_log in log_files[:-10]:
+            old_log.unlink()
+    except Exception:
+        pass
     from trading_cli.app import TradingApp
 
     app = TradingApp()
