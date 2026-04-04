@@ -138,6 +138,9 @@ class BacktestEngine:
         equity_values = [initial_capital]
 
         # Normalize column names to lowercase for consistent access
+        # yfinance can return MultiIndex columns (tuples), so flatten them first
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = [c[0] for c in df.columns]
         df.columns = [c.lower() for c in df.columns]
         if "adj close" in df.columns:
             df = df.rename(columns={"adj close": "adj_close"})
