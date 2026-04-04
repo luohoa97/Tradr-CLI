@@ -73,6 +73,7 @@ class BacktestEngine:
         use_sentiment: bool = True,
         strategy=None,
         progress_callback=None,
+        debug: bool = False,
     ):
         """
         Args:
@@ -85,6 +86,7 @@ class BacktestEngine:
             strategy: StrategyAdapter instance. If None, falls back to legacy
                       hardcoded technical + sentiment pipeline.
             progress_callback: Optional callable(str) to report progress.
+            debug: If True, log every bar's signal details at INFO level.
         """
         self.config = config
         self.finbert = finbert
@@ -92,6 +94,10 @@ class BacktestEngine:
         self.use_sentiment = use_sentiment
         self.strategy = strategy
         self.progress_callback = progress_callback
+        self.debug = debug
+        # Force INFO level on this logger when debug is enabled
+        if debug:
+            logger.setLevel(logging.INFO)
 
     def run(
         self,
@@ -241,6 +247,11 @@ class BacktestEngine:
                 reason = signal_result.reason
                 buy_threshold = self.config.get("signal_buy_threshold", 0.5)
                 sell_threshold = self.config.get("signal_sell_threshold", -0.3)
+                if self.debug:
+                    logger.info(
+                        "Bar %d | %s | price=%.2f | score=%.3f | action=%s | reason=%s",
+                        idx, current_date, current_price, score, action, reason,
+                    )
             else:
                 # Legacy hardcoded technical + sentiment
                 tech = technical_score(
@@ -262,8 +273,11 @@ class BacktestEngine:
                 else:
                     action = "HOLD"
                 reason = f"hybrid={hybrid:.3f} tech={tech:.3f}"
-                if idx < 3:
-                    logger.info("Bar %d: price=%.2f tech=%.3f hybrid=%.3f action=%s", idx, current_price, tech, hybrid, action)
+                if self.debug:
+                    logger.info(
+                        "Bar %d | %s | price=%.2f | tech=%.3f | sent=%.3f | hybrid=%.3f | action=%s",
+                        idx, current_date, current_price, tech, sent_score, hybrid, action,
+                    )
 
             if action == "BUY" and position_qty == 0:
                 qty = calculate_position_size(
@@ -289,6 +303,16 @@ class BacktestEngine:
                         qty=qty,
                         reason=reason,
                     ))
+                    if self.debug:
+                        logger.info(
+                            "  >>> BUY %d @ %.2f (cost=%.2f, cash=%.2f, pos=%d)",
+                            qty, current_price, cost, cash, position_qty,
+                        )
+                elif self.debug:
+                    logger.info(
+                        "  >>> BUY blocked: qty=%d, cash=%.2f, need=%.2f",
+                        qty, cash, qty * current_price,
+                    )
 
             elif action == "SELL" and position_qty > 0:
                 sell_reason = reason
@@ -308,6 +332,12 @@ class BacktestEngine:
                     reason=sell_reason,
                     pnl=pnl,
                 ))
+
+                if self.debug:
+                    logger.info(
+                        "  >>> SELL %d @ %.2f (pnl=%.2f, proceeds=%.2f, cash=%.2f)",
+                        position_qty, current_price, pnl, proceeds, cash,
+                    )
 
                 position_qty = 0
                 position_avg_price = 0.0

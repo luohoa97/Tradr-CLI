@@ -264,6 +264,7 @@ class BacktestScreen(Screen):
                 use_sentiment=use_sentiment,
                 strategy=strategy,
                 progress_callback=lambda msg: self.app.call_from_thread(self._update_progress, msg),
+                debug=True,
             )
             result = engine.run(symbol, ohlcv, initial_capital=100_000.0)
             self.app.call_from_thread(self._display_result, result)
