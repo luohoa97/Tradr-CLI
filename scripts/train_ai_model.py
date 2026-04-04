@@ -45,7 +45,7 @@ def get_max_batch_size(model, input_dim, seq_len, device, start_batch=128):
     if device.type == 'cpu':
         return 64
         
-    print("🔍 Searching for optimal batch size for your GPU...", flush=True)
+    tqdm.write("🔍 Searching for optimal batch size for your GPU...")
     batch_size = start_batch
     last_success = batch_size
     
@@ -70,7 +70,7 @@ def get_max_batch_size(model, input_dim, seq_len, device, start_batch=128):
     except RuntimeError as e:
         pbar.close()
         if "out of memory" in str(e).lower():
-            print(f"💡 GPU Hit limit at {batch_size}. Using {last_success} as optimal batch.", flush=True)
+            tqdm.write(f"💡 GPU Hit limit at {batch_size}. Using {last_success} as optimal batch.")
             torch.cuda.empty_cache()
         else:
             raise e
@@ -121,7 +121,7 @@ def train():
     use_bf16 = (dtype == torch.bfloat16)
     scaler = torch.amp.GradScaler(device_type, enabled=(not use_bf16 and device.type == 'cuda'))
 
-    print(f"🚀 Starting training (Batch Size: {batch_size}, Precision: {dtype})...", flush=True)
+    tqdm.write(f"🚀 Starting training (Batch Size: {batch_size}, Precision: {dtype})...")
     best_val_loss = float('inf')
     
     for epoch in range(EPOCHS):
@@ -184,13 +184,13 @@ def train():
         pnl = float(np.sum(all_rets[all_preds == 1]) - np.sum(all_rets[all_preds == 2]))
         win_rate = float(np.sum((all_preds == 1) & (all_true == 1)) / (buys + 1e-6))
         
-        print(f"\n--- Epoch {epoch+1} Statistics ---", flush=True)
-        print(f"Val Loss: {avg_val_loss:.4f} | Total PnL: {pnl:+.4f} | Win Rate: {win_rate:.1%}", flush=True)
-        print(f"Signals: {buys} BUY | {sells} SELL | Activity: {(buys+sells)/len(all_preds):.1%}", flush=True)
+        tqdm.write(f"\n--- Epoch {epoch+1} Statistics ---")
+        tqdm.write(f"Val Loss: {avg_val_loss:.4f} | Total PnL: {pnl:+.4f} | Win Rate: {win_rate:.1%}")
+        tqdm.write(f"Signals: {buys} BUY | {sells} SELL | Activity: {(buys+sells)/len(all_preds):.1%}")
         
         if buys + sells > 0:
             cm = confusion_matrix(all_true, all_preds, labels=[0, 1, 2])
-            print(f"Confusion Matrix (HOLD/BUY/SELL):\n{cm}", flush=True)
+            tqdm.write(f"Confusion Matrix (HOLD/BUY/SELL):\n{cm}")
 
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
