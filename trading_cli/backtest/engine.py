@@ -113,18 +113,41 @@ class BacktestEngine:
         Simulates daily signal generation and order execution at next day's open.
         """
         df = ohlcv.copy()
-        if "Date" in df.columns:
-            df["Date"] = pd.to_datetime(df["Date"])
-            if start_date:
-                df = df[df["Date"] >= pd.Timestamp(start_date)]
-            if end_date:
-                df = df[df["Date"] <= pd.Timestamp(end_date)]
+        # Handle both column-based and index-based dates
+        if "Date" in df.columns or "date" in df.columns:
+            date_col = "Date" if "Date" in df.columns else "date"
+            df[date_col] = pd.to_datetime(df[date_col])
+            df = df.set_index(date_col)
+
+        # Apply date range filter on the index
+        if start_date:
+            df = df[df.index >= pd.Timestamp(start_date)]
+        if end_date:
+            df = df[df.index <= pd.Timestamp(end_date)]
+
+        # Reset index to get date back as a column for downstream code
+        df = df.reset_index()
+        df = df.rename(columns={"index": "date"})
+
+        # Normalize column names to lowercase for consistent access
+        # yfinance can return MultiIndex columns (tuples), so flatten them first
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = [c[0] for c in df.columns]
+        df.columns = [c.lower() for c in df.columns]
+        if "adj close" in df.columns:
+            df = df.rename(columns={"adj close": "adj_close"})
+
+        logger.info("Backtest %s: %d bars, columns: %s", symbol, len(df), list(df.columns))
 
         if len(df) < 60:
+            logger.warning("Backtest %s: not enough data (%d bars, need 60+)", symbol, len(df))
+            date_col = "date" if "date" in df.columns else None
+            start_str = str(df.iloc[0][date_col])[:10] if date_col and len(df) > 0 else "N/A"
+            end_str = str(df.iloc[-1][date_col])[:10] if date_col and len(df) > 0 else "N/A"
             return BacktestResult(
                 symbol=symbol,
-                start_date=str(df.index[0]) if len(df) > 0 else "N/A",
-                end_date=str(df.index[-1]) if len(df) > 0 else "N/A",
+                start_date=start_str,
+                end_date=end_str,
                 initial_capital=initial_capital,
                 final_equity=initial_capital,
                 total_return_pct=0.0,
@@ -224,7 +247,7 @@ class BacktestEngine:
             historical_ohlcv = df.iloc[:i]
             current_bar = df.iloc[i]
             current_price = float(current_bar["close"])
-            current_date = str(current_bar.get("date", df.index[i]))
+            current_date = str(current_bar.get("date", ""))
 
             # Use pre-cached sentiment score
             sent_score = sent_scores.get(i, 0.0)
@@ -360,7 +383,7 @@ class BacktestEngine:
         # Close any remaining position at last price
         if position_qty > 0 and len(df) > 0:
             last_price = float(df.iloc[-1]["close"])
-            last_date = str(df.index[-1])
+            last_date = str(df.iloc[-1]["date"])[:10]
             pnl = (last_price - position_avg_price) * position_qty
             cash += position_qty * last_price
             trades.append(BacktestTrade(
@@ -402,8 +425,8 @@ class BacktestEngine:
 
         return BacktestResult(
             symbol=symbol,
-            start_date=str(df.index[0]) if len(df) > 0 else "N/A",
-            end_date=str(df.index[-1]) if len(df) > 0 else "N/A",
+            start_date=str(df.iloc[0]["date"])[:10] if len(df) > 0 else "N/A",
+            end_date=str(df.iloc[-1]["date"])[:10] if len(df) > 0 else "N/A",
             initial_capital=initial_capital,
             final_equity=final_equity,
             total_return_pct=total_return,

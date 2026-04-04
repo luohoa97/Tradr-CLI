@@ -204,14 +204,26 @@ class BacktestScreen(Screen):
             from trading_cli.backtest.engine import BacktestEngine
             from concurrent.futures import ThreadPoolExecutor, as_completed
 
+            from datetime import datetime, timedelta
+
             def run_one_symbol(symbol):
                 """Run backtest for a single symbol in its own thread."""
                 try:
+                    # Calculate days needed to cover requested range
+                    if start_date:
+                        try:
+                            sd = datetime.strptime(start_date, "%Y-%m-%d")
+                            days_needed = max(365, (datetime.now() - sd).days + 60)
+                        except ValueError:
+                            days_needed = 730
+                    else:
+                        days_needed = 730
+
                     adapter = getattr(app, "adapter", None)
                     if adapter and not adapter.is_demo_mode:
-                        ohlcv = adapter.fetch_ohlcv(symbol, days=365)
+                        ohlcv = adapter.fetch_ohlcv(symbol, days=days_needed)
                     else:
-                        ohlcv = fetch_ohlcv_yfinance(symbol, days=365)
+                        ohlcv = fetch_ohlcv_yfinance(symbol, days=days_needed)
 
                     if ohlcv.empty:
                         return None
