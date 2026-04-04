@@ -40,6 +40,9 @@ HF_DATASET_ID = "luohoa97/BitFin" # User's dataset repo
 HF_TOKEN = os.getenv("HF_TOKEN")
 
 def train():
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    logger.info(f"Using device: {device}")
+
     # 1. Load Dataset
     if not os.path.exists("data/trading_dataset.pt"):
         logger.info("Dataset not found locally. Searching on HF Hub...")
@@ -68,6 +71,7 @@ def train():
     # 3. Create Model
     input_dim = X.shape[2]
     model = create_model(input_dim=input_dim, hidden_dim=HIDDEN_DIM, layers=LAYERS, seq_len=SEQ_LEN)
+    model.to(device)
     
     total_params = sum(p.numel() for p in model.parameters())
     logger.info(f"Model Architecture: BitNet-Transformer ({LAYERS} layers, {HIDDEN_DIM} hidden)")
@@ -87,6 +91,7 @@ def train():
         total = 0
         
         for batch_X, batch_y in train_loader:
+            batch_X, batch_y = batch_X.to(device), batch_y.to(device)
             optimizer.zero_grad()
             outputs = model(batch_X)
             loss = criterion(outputs, batch_y)
@@ -109,6 +114,7 @@ def train():
         val_total = 0
         with torch.no_grad():
             for batch_X, batch_y in val_loader:
+                batch_X, batch_y = batch_X.to(device), batch_y.to(device)
                 outputs = model(batch_X)
                 loss = criterion(outputs, batch_y)
                 val_loss += loss.item()
@@ -142,10 +148,11 @@ def train():
     
     with torch.no_grad():
         for xb, yb in val_loader:
+            xb, yb = xb.to(device), yb.to(device)
             outputs = model(xb)
             preds = torch.argmax(outputs, dim=-1)
-            all_preds.extend(preds.numpy())
-            all_true.extend(yb.numpy())
+            all_preds.extend(preds.cpu().numpy())
+            all_true.extend(yb.cpu().numpy())
             
     target_names = ["HOLD", "BUY", "SELL"]
     report = classification_report(all_true, all_preds, target_names=target_names)
