@@ -297,7 +297,7 @@ class BacktestScreen(Screen):
         """Store result, then chain to next symbol or show combined view."""
         self._all_results.append(result)
         # Chain to next symbol
-        self.call_from_thread(self._next_backtest)
+        self.app.call_from_thread(self._next_backtest)
 
     def _display_all_results(self) -> None:
         """Display combined backtest results for all symbols."""
