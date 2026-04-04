@@ -1,25 +1,28 @@
-FROM ghcr.io/astral-sh/uv:0.5-python3.11
+FROM ghcr.io/astral-sh/uv:python3.11-bookworm-slim
 
 WORKDIR /app
 
-# Copy project metadata and dependencies
-COPY pyproject.toml uv.lock ./
+# 1. Copy metadata AND the README (required by Hatchling/pyproject.toml)
+COPY pyproject.toml uv.lock README.md ./
 
-# Install dependencies using uv
-RUN uv sync --frozen --no-dev
+# 2. Install dependencies (this creates the .venv)
+# Using --no-install-project here prevents it from failing if source isn't there yet
+RUN uv sync --frozen --no-dev --no-install-project
 
-# Copy application code
+# 3. Copy your application source code
 COPY trading_cli/ ./trading_cli/
 
-# Re-sync to ensure local package is installed
+# 4. Final sync to install the local 'trading-cli' package into the venv
 RUN uv sync --frozen --no-dev
 
-# Set environment variables for non-interactive ML
-ENV TOKENIZERS_PARALLELISM=false
-ENV TRANSFORMERS_VERBOSITY=error
-ENV HF_HUB_DISABLE_TELEMETRY=1
-ENV TQDM_DISABLE=1
-ENV PYTHONUNBUFFERED=1
+# Environment variables
+ENV TOKENIZERS_PARALLELISM=false \
+    TRANSFORMERS_VERBOSITY=error \
+    HF_HUB_DISABLE_TELEMETRY=1 \
+    TQDM_DISABLE=1 \
+    PYTHONUNBUFFERED=1
 
-# Default command
+# Ensure the venv is on the PATH so 'uv run' isn't always strictly necessary
+ENV PATH="/app/.venv/bin:$PATH"
+
 CMD ["uv", "run", "trading-cli"]
