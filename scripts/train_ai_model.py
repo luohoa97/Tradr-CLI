@@ -43,10 +43,17 @@ def train():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: {device}")
     
-    # Use BFloat16 if supported (Ampere+ GPUs like A100/H100), otherwise FP16
+    if device.type == "cpu":
+        logger.warning("⚠️  WARNING: CUDA is NOT available. Training on CPU will be EXTREMELY slow.")
+        logger.warning("👉 In Google Colab, go to 'Runtime' > 'Change runtime type' and select 'T4 GPU'.")
+    
+    # Modern torch.amp API
     use_bf16 = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
+    device_type = 'cuda' if torch.cuda.is_available() else 'cpu'
     dtype = torch.bfloat16 if use_bf16 else torch.float16
-    scaler = torch.cuda.amp.GradScaler(enabled=(not use_bf16)) # Scaler only needed for FP16
+    
+    # Scaler only needed for FP16 on CUDA
+    scaler = torch.amp.GradScaler('cuda', enabled=(device.type == 'cuda' and not use_bf16))
 
     # 1. Load Dataset
     if not os.path.exists("data/trading_dataset.pt"):
@@ -100,7 +107,7 @@ def train():
             optimizer.zero_grad()
             
             # Using Mixed Precision (AMP)
-            with torch.cuda.amp.autocast(dtype=dtype):
+            with torch.amp.autocast(device_type=device_type, dtype=dtype, enabled=(device.type == 'cuda')):
                 outputs = model(batch_X)
                 loss = criterion(outputs, batch_y)
             
@@ -128,7 +135,7 @@ def train():
         with torch.no_grad():
             for batch_X, batch_y in val_loader:
                 batch_X, batch_y = batch_X.to(device), batch_y.to(device)
-                with torch.cuda.amp.autocast(dtype=dtype):
+                with torch.amp.autocast(device_type=device_type, dtype=dtype, enabled=(device.type == 'cuda')):
                     outputs = model(batch_X)
                     loss = criterion(outputs, batch_y)
                 val_loss += loss.item()
