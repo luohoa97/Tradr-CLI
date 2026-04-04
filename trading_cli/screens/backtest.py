@@ -13,9 +13,7 @@ from textual import work
 from rich.text import Text
 
 from trading_cli.widgets.ordered_footer import OrderedFooter
-
-if TYPE_CHECKING:
-    from trading_cli.backtest.engine import BacktestResult
+from trading_cli.backtest.engine import BacktestResult
 
 
 class BacktestSummary(Static):
@@ -93,6 +91,10 @@ class BacktestScreen(Screen):
 
     _last_symbol: str = ""
     _last_result: "BacktestResult | None" = None
+    _all_results: list["BacktestResult"] = []
+    _pending_symbols: list[str] = []
+    _start_date: str | None = None
+    _end_date: str | None = None
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -169,11 +171,43 @@ class BacktestScreen(Screen):
             self.app.notify("No symbols configured", severity="warning")
             return
 
+        # Reset accumulated results
+        self._all_results = []
+        self._pending_symbols = list(symbols)
+        self._start_date = start_date
+        self._end_date = end_date
+
         label = f"{start_date or 'start'} → {end_date or 'now'}"
         self.app.notify(f"Backtesting {len(symbols)} symbols ({label})", timeout=2)
-        for symbol in symbols:
-            self._last_symbol = symbol
-            self._execute_backtest(symbol, start_date, end_date)
+
+        # Show loading
+        try:
+            loader = self.query_one("#backtest-loading", LoadingIndicator)
+            loader.display = True
+        except Exception:
+            pass
+
+        # Clear table
+        tbl = self.query_one("#backtest-table", DataTable)
+        tbl.clear()
+
+        # Update summary to show "Running…"
+        summary = self.query_one("#backtest-summary", BacktestSummary)
+        summary._result = None
+        summary.refresh()
+
+        # Kick off first symbol
+        self._next_backtest()
+
+    def _next_backtest(self) -> None:
+        """Run the next pending symbol, or display final results."""
+        if not self._pending_symbols:
+            self._display_all_results()
+            return
+
+        symbol = self._pending_symbols.pop(0)
+        self._update_progress(f"[dim]Backtesting {symbol}… ({len(self._pending_symbols)} remaining)[/dim]")
+        self._execute_backtest(symbol, self._start_date, self._end_date)
 
     @work(thread=True, name="backtest-worker", exclusive=True)
     def _execute_backtest(self, symbol: str, start_date: str | None = None, end_date: str | None = None) -> None:
@@ -260,21 +294,63 @@ class BacktestScreen(Screen):
             pass
 
     def _display_result(self, result: "BacktestResult") -> None:
-        self._last_result = result
+        """Store result, then chain to next symbol or show combined view."""
+        self._all_results.append(result)
+        # Chain to next symbol
+        self.call_from_thread(self._next_backtest)
+
+    def _display_all_results(self) -> None:
+        """Display combined backtest results for all symbols."""
         self._hide_loading()
         self._update_progress("")
 
+        if not self._all_results:
+            self.app.notify("No results", severity="warning")
+            return
+
+        # Aggregate metrics
+        total_trades = sum(r.total_trades for r in self._all_results)
+        total_wins = sum(r.winning_trades for r in self._all_results)
+        total_losses = sum(r.losing_trades for r in self._all_results)
+        total_initial = sum(r.initial_capital for r in self._all_results)
+        total_final = sum(r.final_equity for r in self._all_results)
+        total_return_pct = ((total_final - total_initial) / total_initial * 100) if total_initial else 0
+        max_dd_pct = max(r.max_drawdown_pct for r in self._all_results)
+        sharpe = sum(r.sharpe_ratio for r in self._all_results) / len(self._all_results) if self._all_results else 0
+        win_rate = (total_wins / total_trades * 100) if total_trades else 0
+
+        # Build combined symbol list
+        symbols_str = ", ".join(r.symbol for r in self._all_results)
+
+        # Create a synthetic combined result for the summary widget
+        combined = BacktestResult(
+            symbol=symbols_str,
+            start_date=min(r.start_date for r in self._all_results),
+            end_date=max(r.end_date for r in self._all_results),
+            initial_capital=total_initial,
+            final_equity=total_final,
+            total_return_pct=total_return_pct,
+            max_drawdown_pct=max_dd_pct,
+            sharpe_ratio=sharpe,
+            win_rate=win_rate,
+            total_trades=total_trades,
+            winning_trades=total_wins,
+            losing_trades=total_losses,
+            trades=[t for r in self._all_results for t in r.trades],
+        )
+        self._last_result = combined
+
         summary = self.query_one("#backtest-summary", BacktestSummary)
-        summary.set_result(result)
+        summary.set_result(combined)
 
         tbl = self.query_one("#backtest-table", DataTable)
         tbl.clear()
-        for trade in result.trades:
+        for trade in combined.trades:
             action_style = "bold green" if trade.action == "BUY" else "bold red"
             pnl_val = trade.pnl if trade.pnl is not None else 0
             pnl_str = f"{pnl_val:+,.2f}" if pnl_val != 0 else "—"
             tbl.add_row(
-                trade.timestamp[:10],
+                f"[dim]{trade.symbol}[/dim] {trade.timestamp[:10]}",
                 Text(trade.action, style=action_style),
                 f"{trade.price:.2f}",
                 str(trade.qty),
