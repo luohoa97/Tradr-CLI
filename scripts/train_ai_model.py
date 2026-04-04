@@ -39,6 +39,40 @@ HF_REPO_ID = os.getenv("HF_REPO_ID", "luohoa97/BitFin") # User's model repo
 HF_DATASET_ID = "luohoa97/BitFin" # User's dataset repo
 HF_TOKEN = os.getenv("HF_TOKEN")
 
+def get_max_batch_size(model, input_dim, seq_len, device, start_batch=128):
+    """Automatically find the largest batch size that fits in VRAM."""
+    if device.type == 'cpu':
+        return 64
+        
+    logger.info("🔍 Searching for optimal batch size for your GPU...")
+    batch_size = start_batch
+    last_success = batch_size
+    
+    try:
+        while batch_size <= 16384: # Ceiling
+            # Mock data for testing
+            mock_X = torch.randn(batch_size, seq_len, input_dim).to(device)
+            mock_y = torch.randint(0, 3, (batch_size,)).to(device)
+            
+            # Simulated forward/backward pass
+            outputs = model(mock_X)
+            loss = nn.CrossEntropyLoss()(outputs, mock_y)
+            loss.backward()
+            model.zero_grad()
+            
+            last_success = batch_size
+            batch_size *= 2
+            torch.cuda.empty_cache()
+            
+    except RuntimeError as e:
+        if "out of memory" in str(e).lower():
+            logger.info(f"💡 GPU Hit limit at {batch_size}. Using {last_success} as optimal batch.")
+            torch.cuda.empty_cache()
+        else:
+            raise e
+            
+    return last_success
+
 def train():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: {device}")
@@ -77,13 +111,16 @@ def train():
     val_size = len(dataset) - train_size
     train_ds, val_ds = random_split(dataset, [train_size, val_size])
     
-    train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, pin_memory=True, num_workers=2)
-    val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE, pin_memory=True, num_workers=2)
-
     # 3. Create Model
     input_dim = X.shape[2]
     model = create_model(input_dim=input_dim, hidden_dim=HIDDEN_DIM, layers=LAYERS, seq_len=SEQ_LEN)
     model.to(device)
+    
+    # 4. Dynamic Batch Sizing
+    batch_size = get_max_batch_size(model, input_dim, SEQ_LEN, device)
+    
+    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, pin_memory=True, num_workers=2)
+    val_loader = DataLoader(val_ds, batch_size=batch_size, pin_memory=True, num_workers=2)
     
     total_params = sum(p.numel() for p in model.parameters())
     logger.info(f"Model Architecture: BitNet-Transformer ({LAYERS} layers, {HIDDEN_DIM} hidden)")
