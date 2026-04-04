@@ -239,7 +239,12 @@ class BacktestEngine:
                     bb_window, bb_std, ema_fast, ema_slow, vol_window,
                     tech_weights,
                 )
-                hybrid = tech_weight * tech + sent_weight * sent_score
+                # Normalize hybrid score: if sentiment is absent (0.0),
+                # use tech alone so buy/sell thresholds remain reachable
+                if sent_score == 0.0:
+                    hybrid = tech
+                else:
+                    hybrid = tech_weight * tech + sent_weight * sent_score
                 score = hybrid
                 if hybrid >= buy_threshold:
                     action = "BUY"
