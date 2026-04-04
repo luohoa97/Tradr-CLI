@@ -220,7 +220,8 @@ class BacktestScreen(Screen):
                         days_needed = 730
 
                     adapter = getattr(app, "adapter", None)
-                    if adapter and not adapter.is_demo_mode:
+                    # Always use Alpaca for historical data if available
+                    if adapter:
                         ohlcv = adapter.fetch_ohlcv(symbol, days=days_needed)
                     else:
                         ohlcv = fetch_ohlcv_yfinance(symbol, days=days_needed)
@@ -243,7 +244,7 @@ class BacktestScreen(Screen):
                     return engine.run(symbol, ohlcv, start_date=start_date, end_date=end_date, initial_capital=100_000.0)
                 except Exception as exc:
                     import logging
-                    logging.getLogger(__name__).debug("Backtest %s skipped: %s", symbol, exc)
+                    logging.getLogger(__name__).error("Backtest %s failed: %s", symbol, exc)
                     return None
 
             total = len(symbols)
