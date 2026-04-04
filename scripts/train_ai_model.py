@@ -10,6 +10,8 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset, random_split
+from tqdm import tqdm
+from tqdm import tqdm
 import logging
 from safetensors.torch import save_file, load_file
 from huggingface_hub import HfApi, create_repo, hf_hub_download
@@ -103,6 +105,7 @@ def train():
             logger.info("🚀 Starting on-the-fly dataset generation (10 years, 70 symbols)...")
             build_dataset()
 
+    logger.info("🚀 Loading dataset from data/trading_dataset.pt...")
     data = torch.load("data/trading_dataset.pt")
     X, y = data["X"], data["y"]
     
@@ -131,6 +134,8 @@ def train():
     
     logger.info("Starting training on %d samples (%d features)...", len(X), input_dim)
     
+    # 5. Start Training
+    logger.info("🚀 Starting training loop...")
     best_val_loss = float('inf')
     
     for epoch in range(EPOCHS):
@@ -139,7 +144,8 @@ def train():
         correct = 0
         total = 0
         
-        for batch_X, batch_y in train_loader:
+        pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{EPOCHS}")
+        for batch_X, batch_y in pbar:
             batch_X, batch_y = batch_X.to(device), batch_y.to(device)
             optimizer.zero_grad()
             
@@ -163,6 +169,12 @@ def train():
             _, predicted = outputs.max(1)
             total += batch_y.size(0)
             correct += predicted.eq(batch_y).sum().item()
+            
+            # Update progress bar
+            pbar.set_postfix({
+                "loss": f"{loss.item():.4f}",
+                "acc": f"{100.*correct/total:.1f}%"
+            })
             
         # Validation
         model.eval()
