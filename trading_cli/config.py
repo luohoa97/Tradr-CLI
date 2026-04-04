@@ -24,7 +24,7 @@ DEFAULT_CONFIG: dict = {
     "default_symbols": ["AAPL", "TSLA", "NVDA"],
     "poll_interval_prices": 30,
     "poll_interval_news": 900,
-    "poll_interval_signals": 300,
+    "poll_interval_signals": 60,
     "poll_interval_positions": 60,
     "initial_cash": 100000.0,
     "finbert_batch_size": 50,

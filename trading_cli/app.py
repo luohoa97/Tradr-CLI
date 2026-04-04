@@ -643,9 +643,21 @@ class TradingApp(App):
         # Update dashboard with cycle time
         self.call_from_thread(self._on_cycle_completed, cycle_time, auto_enabled)
 
-        for symbol in list(self.watchlist):
+        # When auto-trading, scan broader asset universe instead of just watchlist
+        scan_universe = auto_enabled and hasattr(self, 'asset_search') and self.asset_search.is_ready
+        if scan_universe:
+            all_assets = [a["symbol"] for a in self.asset_search._assets]
+            # Rotate through universe: scan 50 stocks per cycle, offset by cycle count
+            cycle_offset = getattr(self, '_signal_cycle_count', 0) * 50
+            self._signal_cycle_count = getattr(self, '_signal_cycle_count', 0) + 1
+            symbols = all_assets[cycle_offset % len(all_assets):][:50]
+        else:
+            symbols = list(self.watchlist)
+
+        for symbol in symbols:
             try:
-                ohlcv = fetch_ohlcv_yfinance(symbol, days=90)
+                # Use shorter window for live signals (only need recent data for breakout detection)
+                ohlcv = fetch_ohlcv_yfinance(symbol, days=30)
                 if ohlcv.empty:
                     logger.warning(f"No OHLCV data for {symbol}, skipping")
                     continue
