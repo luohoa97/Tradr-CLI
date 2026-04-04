@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 # Hyperparameters
 EPOCHS = 100
-BATCH_SIZE = 128 # Higher for T4 GPU
+BATCH_SIZE = 1024 # Significant increase for T4/A100 utilization
 LR = 0.0003
 HIDDEN_DIM = 512
 LAYERS = 8
@@ -77,8 +77,8 @@ def train():
     val_size = len(dataset) - train_size
     train_ds, val_ds = random_split(dataset, [train_size, val_size])
     
-    train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, pin_memory=True)
-    val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE, pin_memory=True)
+    train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, pin_memory=True, num_workers=2)
+    val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE, pin_memory=True, num_workers=2)
 
     # 3. Create Model
     input_dim = X.shape[2]
