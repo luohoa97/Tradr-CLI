@@ -15,7 +15,7 @@ from rich.text import Text
 from trading_cli.widgets.ordered_footer import OrderedFooter
 
 if TYPE_CHECKING:
-    from trading_cli.strategy.backtest import BacktestResult
+    from trading_cli.backtest.engine import BacktestResult
 
 
 class BacktestScreen(Screen):
@@ -208,7 +208,7 @@ class BacktestScreen(Screen):
         try:
             app = self.app
             from trading_cli.data.news import fetch_headlines_with_timestamps
-            from trading_cli.strategy.backtest import BacktestEngine
+            from trading_cli.backtest.engine import BacktestEngine
 
             # Use adapter for historical data
             adapter = getattr(app, "adapter", None)
