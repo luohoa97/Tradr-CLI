@@ -161,10 +161,14 @@ class BacktestScreen(Screen):
             self.app.notify("App not fully initialized", severity="error")
             return
 
-        symbols = app.config.get("default_symbols", ["AAPL", "TSLA", "NVDA"])
+        # Use full asset universe from adapter (not just 3 hardcoded symbols)
+        symbols = []
+        if hasattr(app, "asset_search") and app.asset_search.is_ready:
+            all_symbols = [a["symbol"] for a in app.asset_search._assets]
+            # Cap at 50 symbols to keep backtest time reasonable (~2-3 min)
+            symbols = all_symbols[:50]
         if not symbols:
-            self.app.notify("No symbols configured", severity="warning")
-            return
+            symbols = app.config.get("default_symbols", ["AAPL", "TSLA", "NVDA"])
 
         # Reset accumulated results
         self._all_results = []
