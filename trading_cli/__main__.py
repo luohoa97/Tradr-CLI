@@ -32,12 +32,17 @@ from pathlib import Path
 
 
 def main() -> None:
+    # Ensure config and log directories exist before any file operations
+    config_dir = Path("~/.config/trading-cli").expanduser()
+    config_dir.mkdir(parents=True, exist_ok=True)
+
+    log_path = config_dir / "app.log"
     logging.basicConfig(
         level=logging.WARNING,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         handlers=[
             logging.FileHandler(
-                Path("~/.config/trading-cli/app.log").expanduser(),
+                log_path,
                 mode="a",
                 encoding="utf-8",
             )
