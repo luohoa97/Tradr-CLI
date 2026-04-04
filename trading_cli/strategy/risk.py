@@ -8,6 +8,25 @@ import math
 logger = logging.getLogger(__name__)
  
  
+def check_market_regime(
+    spy_ohlcv: pd.DataFrame,
+    period: int = 200,
+) -> str:
+    """
+    Determine if the broad market is Bullish or Bearish.
+    Uses SPY or QQQ 200-day SMA as a proxy.
+    """
+    if spy_ohlcv.empty or len(spy_ohlcv) < period:
+        return "UNKNOWN"
+    
+    close_col = "close" if "close" in spy_ohlcv.columns else "Close"
+    closes = spy_ohlcv[close_col]
+    sma = closes.rolling(window=period).mean().iloc[-1]
+    current = closes.iloc[-1]
+    
+    return "BULLISH" if current > sma else "BEARISH"
+
+
 def calculate_position_size(
     portfolio_value: float,
     price: float,
@@ -18,18 +37,28 @@ def calculate_position_size(
     Calculate number of shares to buy.
  
     risk_pct:         fraction of portfolio to risk per trade (default 2%)
-    max_position_pct: cap single position at 10% of portfolio
+    max_position_pct: cap single position at X% of portfolio
     Returns at least 1 share, never more than the cap.
     """
     if price <= 0 or portfolio_value <= 0:
         return 0
+    
+    # Calculate shares based on risk budget
     risk_budget = portfolio_value * risk_pct
-    shares = math.floor(risk_budget / price)
-    max_shares = math.floor(portfolio_value * max_position_pct / price)
-    shares = max(1, min(shares, max_shares))
+    shares_by_risk = math.floor(risk_budget / price)
+    
+    # Calculate shares based on portfolio cap
+    max_budget = portfolio_value * max_position_pct
+    max_shares = math.floor(max_budget / price)
+    
+    # Use the smaller of the two, but at least 1 if we can afford it
+    shares = min(shares_by_risk, max_shares)
+    if shares <= 0 and max_shares > 0:
+        shares = 1
+        
     logger.debug(
-        "Position size: portfolio=%.0f price=%.2f risk_pct=%.2f → %d shares",
-        portfolio_value, price, risk_pct, shares,
+        "Position size: portfolio=%.0f price=%.2f risk_pct=%.2f max_pos_pct=%.2f → %d shares",
+        portfolio_value, price, risk_pct, max_position_pct, shares,
     )
     return shares
  

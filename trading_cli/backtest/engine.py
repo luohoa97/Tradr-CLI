@@ -119,15 +119,28 @@ class BacktestEngine:
             df[date_col] = pd.to_datetime(df[date_col])
             df = df.set_index(date_col)
 
-        # Apply date range filter on the index
+        # Handle timezone mismatch for date range filtering
+        # Alpaca data is UTC-aware, while start_date/end_date from UI are naive
         if start_date:
-            df = df[df.index >= pd.Timestamp(start_date)]
+            sd = pd.Timestamp(start_date)
+            if df.index.tz is not None:
+                sd = sd.tz_localize(df.index.tz)
+            df = df[df.index >= sd]
         if end_date:
-            df = df[df.index <= pd.Timestamp(end_date)]
+            ed = pd.Timestamp(end_date)
+            if df.index.tz is not None:
+                ed = ed.tz_localize(df.index.tz)
+            df = df[df.index <= ed]
 
         # Reset index to get date back as a column for downstream code
+        # Ensure we name the date column 'date' regardless of the index name
         df = df.reset_index()
-        df = df.rename(columns={"index": "date"})
+        # If the index had a name (e.g. 'timestamp'), it will be the first column
+        # Otherwise it's named 'index'
+        if "index" in df.columns:
+            df = df.rename(columns={"index": "date"})
+        elif df.columns[0] != "date":
+            df = df.rename(columns={df.columns[0]: "date"})
 
         # Normalize column names to lowercase for consistent access
         # yfinance can return MultiIndex columns (tuples), so flatten them first
@@ -317,7 +330,7 @@ class BacktestEngine:
                     cash + position_qty * position_avg_price,
                     current_price,
                     risk_pct=risk_pct,
-                    max_position_pct=0.10,
+                    max_position_pct=self.config.get("max_position_pct", 0.10),
                 )
                 if qty > 0 and cash >= qty * current_price:
                     cost = qty * current_price

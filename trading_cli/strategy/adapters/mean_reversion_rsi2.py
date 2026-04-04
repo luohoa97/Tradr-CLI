@@ -65,10 +65,10 @@ class MeanReversionRSI2Strategy(StrategyAdapter):
             ),
             params_schema={
                 "rsi_period": {"type": "int", "default": 2, "desc": "RSI period (short = more sensitive)"},
-                "rsi_oversold": {"type": "int", "default": 10, "desc": "RSI oversold threshold (buy)"},
-                "rsi_overbought": {"type": "int", "default": 80, "desc": "RSI overbought threshold (sell)"},
+                "rsi_oversold": {"type": "int", "default": 15, "desc": "RSI oversold threshold (buy)"},
+                "rsi_overbought": {"type": "int", "default": 70, "desc": "RSI overbought threshold (sell)"},
                 "bb_window": {"type": "int", "default": 20, "desc": "Bollinger Bands window"},
-                "bb_std": {"type": "float", "default": 2.0, "desc": "Bollinger Bands std multiplier"},
+                "bb_std": {"type": "float", "default": 1.5, "desc": "Bollinger Bands std multiplier"},
                 "signal_buy_threshold": {"type": "float", "default": 0.0, "desc": "Not used — signals are binary"},
                 "signal_sell_threshold": {"type": "float", "default": 0.0, "desc": "Not used — signals are binary"},
             },
@@ -94,10 +94,10 @@ class MeanReversionRSI2Strategy(StrategyAdapter):
         closes = ohlcv[close_col]
 
         rsi_period = config.get("rsi_period", 2)
-        rsi_oversold = config.get("rsi_oversold", 10)
-        rsi_overbought = config.get("rsi_overbought", 80)
+        rsi_oversold = config.get("rsi_oversold", 15)
+        rsi_overbought = config.get("rsi_overbought", 70)
         bb_window = config.get("bb_window", 20)
-        bb_std = config.get("bb_std", 2.0)
+        bb_std = config.get("bb_std", 1.5)
 
         if len(closes) < bb_window + 5:
             return SignalResult(symbol, "HOLD", 0.0, 0.0, "insufficient data")
@@ -125,7 +125,7 @@ class MeanReversionRSI2Strategy(StrategyAdapter):
 
         reason_parts = []
 
-        # Stop-loss: 2x ATR below entry
+        # Stop-loss: 4x ATR below entry (wider for mean reversion)
         if in_position and position_entry:
             high_col = "high" if "high" in ohlcv.columns else "High"
             low_col = "low" if "low" in ohlcv.columns else "Low"
@@ -135,7 +135,9 @@ class MeanReversionRSI2Strategy(StrategyAdapter):
                 tr2 = (ohlcv[high_col] - prev_close).abs()
                 tr3 = (ohlcv[low_col] - prev_close).abs()
                 atr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1).rolling(14).mean().iloc[-1]
-                stop_price = position_entry - 2 * atr
+                # Ensure a minimum stop distance (e.g., 2% of entry) to avoid flat-price trap
+                stop_dist = max(4 * (atr or 0), position_entry * 0.02)
+                stop_price = position_entry - stop_dist
                 if current_price <= stop_price:
                     return SignalResult(
                         symbol, "SELL",
@@ -147,7 +149,8 @@ class MeanReversionRSI2Strategy(StrategyAdapter):
 
         # Entry: RSI(2) < oversold AND price below lower BB
         if not in_position:
-            if rsi <= rsi_oversold and current_price <= lower:
+            # Check for minimum volatility to avoid flat-price trap (std > 0.1% of price)
+            if std.iloc[-1] > (current_price * 0.001) and rsi <= rsi_oversold and current_price <= lower:
                 # Distance from lower band as score (deeper = stronger signal)
                 band_width = upper - lower
                 depth = (lower - current_price) / (band_width or 1.0)
@@ -161,12 +164,14 @@ class MeanReversionRSI2Strategy(StrategyAdapter):
                     reason=" + ".join(reason_parts),
                     metadata={"rsi": rsi, "bb_lower": lower, "bb_middle": middle, "bb_upper": upper},
                 )
+            elif std.iloc[-1] <= (current_price * 0.001):
+                reason_parts.append("Low volatility (flat price)")
             elif rsi <= rsi_oversold:
                 reason_parts.append(f"RSI(2)={rsi:.0f} but price above lower BB")
             elif current_price <= lower:
                 reason_parts.append(f"Price at lower BB but RSI(2)={rsi:.0f} not oversold")
             else:
-                reason_parts.append(f"RSI(2)={rsi:.0f}, no extreme oversold")
+                reason_parts.append(f"RSI(2)={rsi:.0f}, no signal")
 
         # Exit: RSI(2) > overbought OR price crosses above middle BB
         if in_position:

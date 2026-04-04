@@ -89,9 +89,9 @@ class TrendFollowingStrategy(StrategyAdapter):
         if len(closes) < entry_period + 5:
             return SignalResult(symbol, "HOLD", 0.0, 0.0, "insufficient data")
 
-        # Donchian channels
-        donchian_high = highs.rolling(window=entry_period, min_periods=entry_period).max().iloc[-1]
-        donchian_low = lows.rolling(window=exit_period, min_periods=exit_period).min().iloc[-1]
+        # Donchian channels — use previous bars to allow breakout detection
+        donchian_high = highs.shift(1).rolling(window=entry_period, min_periods=entry_period).max().iloc[-1]
+        donchian_low = lows.shift(1).rolling(window=exit_period, min_periods=exit_period).min().iloc[-1]
         current_price = closes.iloc[-1]
 
         # ATR filter — skip if market is too quiet (sideways)

@@ -15,6 +15,9 @@ from trading_cli.strategy.adapters.mean_reversion import MeanReversionStrategy
 from trading_cli.strategy.adapters.mean_reversion_rsi2 import MeanReversionRSI2Strategy
 from trading_cli.strategy.adapters.trend_following import TrendFollowingStrategy
 from trading_cli.strategy.adapters.sentiment_driven import SentimentStrategy
+from trading_cli.strategy.adapters.regime_aware import RegimeAwareStrategy
+from trading_cli.strategy.adapters.super_strategy import SuperStrategy
+from trading_cli.strategy.adapters.ai_fusion import AIFusionStrategy
 
 __all__ = [
     "StrategyAdapter",
@@ -30,4 +33,7 @@ __all__ = [
     "MeanReversionRSI2Strategy",
     "TrendFollowingStrategy",
     "SentimentStrategy",
+    "RegimeAwareStrategy",
+    "SuperStrategy",
+    "AIFusionStrategy",
 ]

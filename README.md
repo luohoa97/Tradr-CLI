@@ -1,3 +1,12 @@
+---
+title: AI Trading Fusion - BitNet Transformer
+emoji: 📈
+colorFrom: blue
+colorTo: green
+sdk: docker
+pinned: false
+---
+
 # trading-cli
  
 A full-screen TUI AI trading application powered by **FinBERT** sentiment analysis and **Alpaca** paper trading.

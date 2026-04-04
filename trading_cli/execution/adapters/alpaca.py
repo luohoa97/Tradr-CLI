@@ -167,8 +167,9 @@ class AlpacaAdapter(TradingAdapter):
 
     def fetch_ohlcv(self, symbol: str, days: int = 90) -> pd.DataFrame:
         if self._demo:
-            # Return empty DataFrame in demo mode
-            return pd.DataFrame()
+            # Fallback to yfinance in demo mode
+            from trading_cli.data.market import fetch_ohlcv_yfinance
+            return fetch_ohlcv_yfinance(symbol, days)
 
         try:
             from alpaca.data.requests import StockBarsRequest
@@ -193,8 +194,9 @@ class AlpacaAdapter(TradingAdapter):
                                      "close": "Close", "volume": "Volume"})
             return df.tail(days)
         except Exception as exc:
-            logger.warning("Alpaca OHLCV fetch failed for %s: %s", symbol, exc)
-            return pd.DataFrame()
+            logger.warning("Alpaca OHLCV fetch failed for %s: %s — falling back to yfinance", symbol, exc)
+            from trading_cli.data.market import fetch_ohlcv_yfinance
+            return fetch_ohlcv_yfinance(symbol, days)
 
     def get_latest_quote(self, symbol: str) -> float | None:
         if self._demo:

@@ -49,13 +49,19 @@ def fetch_ohlcv_alpaca(
  
  
 def fetch_ohlcv_yfinance(symbol: str, days: int = 90) -> pd.DataFrame:
-    """Fetch OHLCV bars from yfinance."""
+    """Fetch OHLCV bars from yfinance. Period can be long for daily interval."""
     try:
         import yfinance as yf
-        period = f"{min(days, 730)}d"
+        # No more 730d cap for 1d data; yfinance handles 10y+ easily for daily.
+        period = f"{days}d"
         df = yf.download(symbol, period=period, interval="1d", progress=False, auto_adjust=True)
         if df.empty:
             return pd.DataFrame()
+        
+        # Flatten MultiIndex columns if present (common in newer yfinance versions)
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+            
         return df.tail(days)
     except Exception as exc:
         logger.error("yfinance fetch failed for %s: %s", symbol, exc)

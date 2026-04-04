@@ -29,12 +29,20 @@ class BacktestSummary(Static):
         if not self._result:
             return "[dim]No backtest data[/dim]"
         r = self._result
-        ret_style = "bold green" if r.total_return_pct >= 0 else "bold red"
+        pnl = r.final_equity - r.initial_capital
+        pnl_style = "bold green" if pnl >= 0 else "bold red"
         dd_style = "bold red" if r.max_drawdown_pct > 10 else "bold yellow"
         sharpe_style = "bold green" if r.sharpe_ratio > 1 else ("bold yellow" if r.sharpe_ratio > 0 else "dim")
+        
+        # Truncate symbol list if it's too long
+        display_symbol = r.symbol
+        if "," in display_symbol and len(display_symbol) > 30:
+            count = display_symbol.count(",") + 1
+            display_symbol = f"{display_symbol.split(',')[0]} + {count-1} others"
+
         return (
-            f"[bold]{r.symbol}[/bold]  "
-            f"[{ret_style}]Return: {r.total_return_pct:+.2f}%[/{ret_style}]  "
+            f"[bold]{display_symbol}[/bold]  "
+            f"[{pnl_style}]P&L: ${pnl:+,.2f} ({r.total_return_pct:+.2f}%)[/{pnl_style}]  "
             f"[{dd_style}]MaxDD: {r.max_drawdown_pct:.2f}%[/{dd_style}]  "
             f"[{sharpe_style}]Sharpe: {r.sharpe_ratio:.2f}[/{sharpe_style}]  "
             f"Win Rate: {r.win_rate:.1f}%  "
@@ -47,6 +55,13 @@ class BacktestScreen(Screen):
     """Screen for viewing backtest results."""
 
     CSS = """
+    #backtest-container {
+        height: 1fr;
+        padding: 0;
+        margin: 0;
+        overflow: hidden;
+    }
+
     #backtest-progress {
         height: 1;
         padding: 0 1;
@@ -80,6 +95,7 @@ class BacktestScreen(Screen):
 
     #backtest-table {
         width: 100%;
+        height: 1fr;
     }
     """
 
@@ -93,15 +109,16 @@ class BacktestScreen(Screen):
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
-        with Vertical(id="backtest-controls"):
-            with Horizontal(id="backtest-date-row"):
-                yield Input(placeholder="Start date (YYYY-MM-DD)", id="backtest-start-date")
-                yield Input(placeholder="End date (YYYY-MM-DD)", id="backtest-end-date")
-            yield Button("🚀 Run", id="btn-backtest-run", variant="success")
-        yield BacktestSummary(id="backtest-summary")
-        yield Label("", id="backtest-progress")
-        yield LoadingIndicator(id="backtest-loading")
-        yield DataTable(id="backtest-table", cursor_type="row")
+        with Vertical(id="backtest-container"):
+            with Vertical(id="backtest-controls"):
+                with Horizontal(id="backtest-date-row"):
+                    yield Input(placeholder="Start date (YYYY-MM-DD)", id="backtest-start-date")
+                    yield Input(placeholder="End date (YYYY-MM-DD)", id="backtest-end-date")
+                yield Button("🚀 Run", id="btn-backtest-run", variant="success")
+            yield BacktestSummary(id="backtest-summary")
+            yield Label("", id="backtest-progress")
+            yield LoadingIndicator(id="backtest-loading")
+            yield DataTable(id="backtest-table", cursor_type="row")
         yield OrderedFooter()
 
     def on_mount(self) -> None:
@@ -229,7 +246,12 @@ class BacktestScreen(Screen):
                     if ohlcv.empty:
                         return None
 
-                    cfg = app.config
+                    cfg = app.config.copy()
+                    # Use higher risk percentage for backtests to fully utilize capital
+                    # Since each backtest is isolated to 1 symbol, allow full portfolio usage
+                    cfg["risk_pct"] = 0.95  # Use 95% of capital per trade
+                    cfg["max_position_pct"] = 1.0  # Allow 100% portfolio size
+                    
                     strategy = getattr(app, "strategy", None)
 
                     engine = BacktestEngine(
@@ -293,15 +315,18 @@ class BacktestScreen(Screen):
             return
 
         # Aggregate metrics
-        total_trades = sum(r.total_trades for r in self._all_results)
         total_wins = sum(r.winning_trades for r in self._all_results)
         total_losses = sum(r.losing_trades for r in self._all_results)
+        total_closed_trades = total_wins + total_losses
+        total_trades = sum(r.total_trades for r in self._all_results)
         total_initial = sum(r.initial_capital for r in self._all_results)
         total_final = sum(r.final_equity for r in self._all_results)
         total_return_pct = ((total_final - total_initial) / total_initial * 100) if total_initial else 0
         max_dd_pct = max(r.max_drawdown_pct for r in self._all_results)
         sharpe = sum(r.sharpe_ratio for r in self._all_results) / len(self._all_results) if self._all_results else 0
-        win_rate = (total_wins / total_trades * 100) if total_trades else 0
+        
+        # Win rate: percentage of winning trades among all closed trades
+        win_rate = (total_wins / total_closed_trades * 100) if total_closed_trades else 0
 
         # Build combined symbol list
         symbols_str = ", ".join(r.symbol for r in self._all_results)

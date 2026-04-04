@@ -1,28 +1,27 @@
-FROM ghcr.io/astral-sh/uv:python3.11-bookworm-slim
+FROM python:3.11-slim
 
 WORKDIR /app
 
-# 1. Copy metadata AND the README (required by Hatchling/pyproject.toml)
-COPY pyproject.toml uv.lock README.md ./
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    curl \
+    git \
+    && rm -rf /var/lib/apt/lists/*
 
-# 2. Install dependencies (this creates the .venv)
-# Using --no-install-project here prevents it from failing if source isn't there yet
-RUN uv sync --frozen --no-dev --no-install-project
+# Install dependencies
+COPY requirements.txt .
+# Add safetensors, huggingface_hub, scikit-learn explicitly just in case
+RUN pip install --no-cache-dir -r requirements.txt \
+    safetensors huggingface_hub scikit-learn pandas numpy torch yfinance
 
-# 3. Copy your application source code
-COPY trading_cli/ ./trading_cli/
+# Copy project files
+COPY . .
 
-# 4. Final sync to install the local 'trading-cli' package into the venv
-RUN uv sync --frozen --no-dev
+# Environment variables (to be set in HF Space Secrets)
+ENV HF_HOME=/tmp/huggingface
+ENV HF_REPO_ID=""
+ENV HF_TOKEN=""
 
-# Environment variables
-ENV TOKENIZERS_PARALLELISM=false \
-    TRANSFORMERS_VERBOSITY=error \
-    HF_HUB_DISABLE_TELEMETRY=1 \
-    TQDM_DISABLE=1 \
-    PYTHONUNBUFFERED=1
-
-# Ensure the venv is on the PATH so 'uv run' isn't always strictly necessary
-ENV PATH="/app/.venv/bin:$PATH"
-
-CMD ["uv", "run", "trading-cli"]
+# Command to run training
+# This will output the performance report and upload to HF Hub
+CMD ["python", "scripts/train_ai_model.py"]
