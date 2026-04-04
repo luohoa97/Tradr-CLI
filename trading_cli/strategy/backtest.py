@@ -163,6 +163,7 @@ class BacktestEngine:
         }
 
         # ── Pre-fetch and cache all sentiment scores ──────────────────────
+        lookback = max(sma_long, ema_slow, bb_window, vol_window) + 30
         sent_scores = {}
         if self.use_sentiment and self.finbert and self.news_fetcher:
             total_days = len(df) - lookback
@@ -192,7 +193,6 @@ class BacktestEngine:
                 sent_scores = {}
 
         # ── Walk forward through data ─────────────────────────────────────
-        lookback = max(sma_long, ema_slow, bb_window, vol_window) + 30
         total_bars = len(df) - lookback
         if self.progress_callback:
             self.progress_callback("Running simulation…")
