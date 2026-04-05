@@ -109,11 +109,14 @@ def train():
     # 4. Dynamic Batch Sizing
     batch_size = get_max_batch_size(model, input_dim, SEQ_LEN, device)
     
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, pin_memory=True, num_workers=2)
-    val_loader = DataLoader(val_ds, batch_size=batch_size, pin_memory=True, num_workers=2)
+    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, pin_memory=True, num_workers=0)
+    val_loader = DataLoader(val_ds, batch_size=batch_size, pin_memory=True, num_workers=0)
     
     optimizer = optim.AdamW(model.parameters(), lr=LR)
-    criterion = nn.CrossEntropyLoss()
+    
+    # 5. Class Weights (HOLD: 2.0, BUY: 1.0, SELL: 3.0)
+    class_weights = torch.tensor([2.0, 1.0, 3.0]).to(device)
+    criterion = nn.CrossEntropyLoss(weight=class_weights)
     
     # Mixed Precision Setup
     dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 8 else torch.float16
@@ -167,8 +170,19 @@ def train():
                     loss = criterion(outputs, batch_y)
                 
                 val_loss += loss.item()
-                preds = torch.argmax(outputs, dim=-1)
-                all_preds.extend(preds.cpu().numpy())
+                
+                # Apply Probability Threshold (0.6)
+                probs = torch.softmax(outputs, dim=-1)
+                conf, preds = torch.max(probs, dim=-1)
+                
+                # If confidence < 0.6, force HOLD (0)
+                # This reduces noisy trades and targets high-conviction signals
+                threshold = 0.6
+                final_preds = preds.clone()
+                mask = (conf < threshold) & (preds != 0)
+                final_preds[mask] = 0
+                
+                all_preds.extend(final_preds.cpu().numpy())
                 all_true.extend(batch_y.cpu().numpy())
                 all_rets.extend(batch_r.numpy())
                 
@@ -181,12 +195,19 @@ def train():
         
         buys = int((all_preds == 1).sum())
         sells = int((all_preds == 2).sum())
-        pnl = float(np.sum(all_rets[all_preds == 1]) - np.sum(all_rets[all_preds == 2]))
-        win_rate = float(np.sum((all_preds == 1) & (all_true == 1)) / (buys + 1e-6))
+        
+        buy_pnl = float(np.sum(all_rets[all_preds == 1]))
+        sell_pnl = float(-np.sum(all_rets[all_preds == 2])) # Future return is inverse for SELL
+        total_pnl = buy_pnl + sell_pnl
+        
+        buy_win_rate = float(np.sum((all_preds == 1) & (all_true == 1)) / (buys + 1e-6))
+        sell_win_rate = float(np.sum((all_preds == 2) & (all_true == 2)) / (sells + 1e-6))
         
         tqdm.write(f"\n--- Epoch {epoch+1} Statistics ---")
-        tqdm.write(f"Val Loss: {avg_val_loss:.4f} | Total PnL: {pnl:+.4f} | Win Rate: {win_rate:.1%}")
-        tqdm.write(f"Signals: {buys} BUY | {sells} SELL | Activity: {(buys+sells)/len(all_preds):.1%}")
+        tqdm.write(f"Val Loss: {avg_val_loss:.4f} | Total PnL: {total_pnl:+.4f}")
+        tqdm.write(f"BUYs: {buys} | PnL: {buy_pnl:+.4f} | Win Rate: {buy_win_rate:.1%}")
+        tqdm.write(f"SELLs: {sells} | PnL: {sell_pnl:+.4f} | Win Rate: {sell_win_rate:.1%}")
+        tqdm.write(f"Activity: {(buys+sells)/len(all_preds):.1%}")
         
         if buys + sells > 0:
             cm = confusion_matrix(all_true, all_preds, labels=[0, 1, 2])
