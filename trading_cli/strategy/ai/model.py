@@ -93,8 +93,53 @@ class BitNetTransformer(nn.Module):
         return torch.argmax(probs, dim=-1).item()
 
 
-def create_model(input_dim=9, hidden_dim=512, output_dim=3, layers=6, seq_len=30):
-    """Helper to instantiate the SOTA BitNet Transformer."""
+class SimpleLSTM(nn.Module):
+    """
+    Standard 2-layer LSTM with Dropout for regularization.
+    Serves as a robust baseline for trading signal classification.
+    """
+    def __init__(self, input_dim=9, hidden_dim=256, n_layers=2, output_dim=3, dropout=0.3):
+        super().__init__()
+        self.lstm = nn.LSTM(
+            input_size=input_dim,
+            hidden_size=hidden_dim,
+            num_layers=n_layers,
+            batch_first=True,
+            dropout=dropout if n_layers > 1 else 0,
+        )
+        self.dropout = nn.Dropout(dropout)
+        self.fc = nn.Linear(hidden_dim, output_dim)
+        
+    def forward(self, x):
+        # x shape: [batch, seq_len, input_dim]
+        lstm_out, _ = self.lstm(x)
+        # Use the last hidden state for classification
+        last_hidden = lstm_out[:, -1, :]
+        out = self.dropout(last_hidden)
+        return self.fc(out)
+
+    @torch.no_grad()
+    def predict_action(self, x):
+        logits = self.forward(x)
+        probs = torch.softmax(logits, dim=-1)
+        return torch.argmax(probs, dim=-1).item()
+
+
+def create_model(input_dim=9, hidden_dim=512, output_dim=3, layers=6, seq_len=30, model_type="bitnet"):
+    """
+    Factory function to create the requested model architecture.
+    Options: 'bitnet' (default), 'lstm'
+    """
+    if model_type.lower() == "lstm":
+        # LSTM usually needs slightly smaller hidden dim or more regularization
+        return SimpleLSTM(
+            input_dim=input_dim,
+            hidden_dim=hidden_dim // 2, # Adjusting for LSTM complexity
+            n_layers=2,
+            output_dim=output_dim,
+            dropout=0.3
+        )
+    
     return BitNetTransformer(
         input_dim=input_dim, 
         d_model=hidden_dim, 
